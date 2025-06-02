@@ -4,16 +4,13 @@ from src.graph.builder import build_rag,build_main
 from langgraph.graph import MessagesState
 from dotenv import load_dotenv
 from src.graph.nodes.quiz_types import embeddings, reranker
-from modelscope import AutoModelForCausalLM, AutoTokenizer
+from src.config.llms import openai_model, openai_api_key, openai_api_base, llm_type
 import os
 import torch
-from transformers import BitsAndBytesConfig
-from peft import PeftModel
+import numpy as np
 from src.utils import getData,get_json_result,saveData
 from tqdm import tqdm
 from src.config.llms import generator_model
-
-import numpy as np
 
 # 固定随机种子
 seed = 42
@@ -24,52 +21,23 @@ torch.cuda.manual_seed_all(seed)
 
 load_dotenv()  # 加载 .env 文件
 
-
-
 def run():
     graph = build_main()
     if generator_model == "qwen":
-        model_path = '/hpc2hdd/home/fye374/ZWZ_Other/quizmanus/models/qwen2.5-14b-qlora-gaokao-1072'
-        
-
-        tokenizer = AutoTokenizer.from_pretrained(
-            model_path, 
-            trust_remote_code=True,
-            use_fast=True,
-            padding_side='left'  # 新增参数，指定左填充
-        )
-        tokenizer.pad_token = tokenizer.eos_token
-
-        # 2. 使用更高效的模型加载方式
-        compute_dtype = torch.float16
-
-        # 3. 启用Flash Attention (如果模型支持)
-        kwargs = {
-            "trust_remote_code": True,
-            "device_map": "auto",
-            # "torch_dtype": compute_dtype,
+        # 使用API配置
+        model = None
+        tokenizer = None
+        api_config = {
+            "model": openai_model,
+            "api_key": openai_api_key,
+            "api_base": openai_api_base,
+            "llm_type": llm_type
         }
-
-        # 检查是否支持Flash Attention
-        # if hasattr(torch.nn.functional, 'scaled_dot_product_attention'):
-        #     kwargs["attn_implementation"] = "flash_attention_2"
-        model = AutoModelForCausalLM.from_pretrained(
-            model_path,
-            **kwargs
-        )
-
-        # 4. 调整模型以适应新的tokenizer大小
-        model.resize_token_embeddings(len(tokenizer))
-
-        # 6. 编译模型 (PyTorch 2.0+特性)
-        if hasattr(torch, 'compile'):
-            model = torch.compile(model, mode="reduce-overhead")
-
-        # 设置为评估模式
-        model.eval()
     else:
         model = None
         tokenizer = None
+        api_config = None
+
     test_file_path = "/hpc2hdd/home/fye374/ZWZ_Other/quizmanus/dataset/test.json"
     save_dir = "/hpc2hdd/home/fye374/ZWZ_Other/quizmanus/quiz_results/qwen_14b_quiz_1072"
     os.makedirs(save_dir, exist_ok=True)
@@ -78,8 +46,6 @@ def run():
         item['quiz_url'] = os.path.join(save_dir,f"{item['id']}.md")
     saveData(tmp_test,test_file_path)
     for idx,file_item in tqdm(enumerate(getData(test_file_path))):
-        # if idx <5:
-        #     continue
         user_input = file_item['query']
 
         # embeddings
@@ -90,8 +56,9 @@ def run():
             "quiz_url": file_item['quiz_url'],
             "rag_graph": build_rag(),
             "search_before_planning": False,
-            "generate_tokenizer":tokenizer,
-            "generate_model":model,
+            "generate_tokenizer": tokenizer,
+            "generate_model": model,
+            "api_config": api_config,  # 添加API配置
             "rag": {
                 "embedding_model": embeddings,
                 "reranker_model": reranker

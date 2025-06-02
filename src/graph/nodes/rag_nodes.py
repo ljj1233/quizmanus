@@ -223,7 +223,6 @@ def rag_generator(state: State):
     parser = JsonOutputParser()
     
     pass_qa = str(state["existed_qa"])
-    # print(state["rag"]["rerank_docs"])
     if len(state["rag"]["reranked_docs"]) == 0:
         context = "\n\n".join(
             state["rag"]["retrieved_docs"]
@@ -233,23 +232,7 @@ def rag_generator(state: State):
             state["rag"]["reranked_docs"]
         )
         
-    
-    if generator_model == "qwen":
-        SYSTEM_PROMPT = '''# 角色说明
-你是一个根据课本内容和课外内容生成{type}的专家，给定一段{subject}的课本内容和一段相关的课外内容，请根据他们生成一道高考{type}。
-
-# 回答格式
-题干；...
-参考答案：...
-解析：...'''
-        messages=[
-            {'role':'system','content':SYSTEM_PROMPT.format(type= state['rag']['type'],subject = state['rag']['subject'])}, 
-            {'role':'user','content': f"课本内容：{context}\n课外内容：{state['rag']['outer_knowledge']}"}, 
-            {'role':'assistant','content': ''}
-        ]
-        final_answer = get_llm_by_type(type = "qwen",model = state['generate_model'],tokenizer =state['generate_tokenizer']).invoke(messages)
-    else:
-        SYSTEM_PROMPT = '''# 角色说明
+    SYSTEM_PROMPT = '''# 角色说明
 你是一个根据课本内容和课外内容生成{type}的专家，给定一段{subject}的课本内容和一段相关的课外内容，请根据他们生成一道高考{type}。题目要完整，如果要引用材料信息就在题干包括具体的材料信息。不要在题目中包含课本内容、课内知识、课外知识等字眼。
 
 # 题型说明
@@ -259,17 +242,27 @@ def rag_generator(state: State):
 题干；...
 参考答案：...
 解析：...'''
-        question_type = '\n'.join([QUESTION_TYPES[key]['desc_for_llm'] for key in QUESTION_TYPES])
-        messages=[
-            {'role':'system','content':SYSTEM_PROMPT.format(type= state['rag']['type'],subject = state['rag']['subject'],question_type = question_type)}, 
-            {'role':'user','content': f"课本内容：{context}\n课外内容：{state['rag']['outer_knowledge']}"}, 
-            {'role':'assistant','content': ''}
-        ]
-        final_answer = get_llm_by_type(type = generator_model).invoke(messages).content
+    question_type = '\n'.join([QUESTION_TYPES[key]['desc_for_llm'] for key in QUESTION_TYPES])
+    messages=[
+        {'role':'system','content':SYSTEM_PROMPT.format(type= state['rag']['type'],subject = state['rag']['subject'],question_type = question_type)}, 
+        {'role':'user','content': f"课本内容：{context}\n课外内容：{state['rag']['outer_knowledge']}"}, 
+        {'role':'assistant','content': ''}
+    ]
     
-    # parsed_output = parser.parse(final_answer)
-    print("final_answer: ",final_answer)
-    # return parsed_output
+    # 使用API配置进行生成
+    if state.get('api_config'):
+        final_answer = get_llm_by_type(
+            type=generator_model,
+            api_config=state['api_config']
+        ).invoke(messages).content
+    else:
+        final_answer = get_llm_by_type(
+            type=generator_model,
+            model=state.get('generate_model'),
+            tokenizer=state.get('generate_tokenizer')
+        ).invoke(messages).content
+    
+    print("final_answer: ", final_answer)
     return Command(
         update = {
             "existed_qa": [

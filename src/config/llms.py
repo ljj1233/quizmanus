@@ -1,10 +1,11 @@
-import sys
-sys.path.append("/hpc2hdd/home/fye374/ZWZ_Other/quizmanus")
-import ALL_KEYS
+import os
+from .ALL_KEYS import common_openai_key, common_openai_base_url
+
+# API配置
 openai_model = "deepseek-v3-250324"
-openai_api_key = ALL_KEYS.common_openai_key
-openai_api_base = ALL_KEYS.common_openai_base_url
-llm_type = "ollama" #openai ollama qwen
+openai_api_key = common_openai_key
+openai_api_base = common_openai_base_url
+llm_type = "ollama"  # openai ollama qwen
 
 generator_model = "qwen"
 

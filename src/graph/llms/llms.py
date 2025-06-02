@@ -1,4 +1,3 @@
-
 from openai import OpenAI
 import ollama
 import sys
@@ -60,10 +59,11 @@ def get_llm_response(prompt, model, model_type = "ollama", options={"format": "j
 
 
 
-def get_llm_by_type(type,model = None,tokenizer = None):
+def get_llm_by_type(type, model=None, tokenizer=None, api_config=None):
     '''
     # paramter:
     type: "ollama","openai","qwen2.5-7b","qwen2.5-3b"
+    api_config: 包含API配置的字典，包括model, api_key, api_base, llm_type等
     # usage:
     from langchain_core.messages import HumanMessage, SystemMessage
     llm = get_llm_by_type("ollama")
@@ -77,75 +77,70 @@ def get_llm_by_type(type,model = None,tokenizer = None):
     print("回答：", response.content)
     '''
     
-    if type == "openai":
+    if type == "openai" or (api_config and api_config.get("llm_type") == "openai"):
+        config = api_config or {}
         llm = ChatOpenAI(
-            model=openai_model,
-            api_key=openai_api_key,  # 替换为你的实际API密钥
-            base_url=openai_api_base,  # 默认是OpenAI官方，可改为自建服务地址
+            model=config.get("model", openai_model),
+            api_key=config.get("api_key", openai_api_key),
+            base_url=config.get("api_base", openai_api_base),
             temperature=0.7,
-            max_retries = 3
-            # max_tokens = 12280,
-            # max_completion_tokens = None
+            max_retries=3
         )
-    elif type == "ollama":
-        # 初始化 Ollama（默认连接本地 http://localhost:11434）
-        # llm = ChatOllama(
-        #     model=ollama_model,  # 可替换为其他本地模型如 "mistral"、"qwen" 等
-        #     temperature=0.7,
-        #     # 如果 Ollama 服务地址不是默认的，可通过 base_url 修改：
-        #     # base_url="http://your-ollama-host:11434"
-        # )
-        
+    elif type == "ollama" or (api_config and api_config.get("llm_type") == "ollama"):
+        config = api_config or {}
         llm = ChatOllama(
-            model=ollama_model,
-            # match your previous options dict
-            num_ctx=25600,       # context window size
-            temperature=0.7,     # randomness
-            stream=False         # synchronous invoke
+            model=config.get("model", ollama_model),
+            num_ctx=25600,
+            temperature=0.7,
+            stream=False
         )
     elif "qwen" in type.lower():
-        # 检查是否有可用的GPU
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        def prepare_input(messages, tokenizer):
-            prompt = tokenizer.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=False,
-                # continue_final_message=True
-            )
-            return prompt.replace("\n<|im_end|>\n",'')+"\n"
-        def single_generate(x, model, tokenizer):
-            # 将模型移动到当前设备（如果尚未移动）
-            model.to(device)
-            
-            # 单条输入处理并移动到相同设备
-            inputs = tokenizer(
-                prepare_input(x, tokenizer), 
-                return_tensors="pt", 
-                padding=True,
-                truncation=True
-            ).to(device)  # 关键修改：整个inputs移动到模型所在设备
-            
-            # 单条生成
-            generated_ids = model.generate(
-                input_ids=inputs.input_ids,
-                attention_mask=inputs.attention_mask,
-                max_new_tokens=1024,
-                do_sample=True,
+        if api_config and api_config.get("llm_type") == "openai":
+            # 如果配置了API，使用API调用
+            config = api_config
+            llm = ChatOpenAI(
+                model=config.get("model", openai_model),
+                api_key=config.get("api_key", openai_api_key),
+                base_url=config.get("api_base", openai_api_base),
                 temperature=0.7,
-                top_p=0.9,
-                pad_token_id=tokenizer.pad_token_id,
-                use_cache=True,
-                repetition_penalty=1.1
+                max_retries=3
             )
+        else:
+            # 使用本地模型
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            def prepare_input(messages, tokenizer):
+                prompt = tokenizer.apply_chat_template(
+                    messages,
+                    tokenize=False,
+                    add_generation_prompt=False,
+                )
+                return prompt.replace("\n<|im_end|>\n",'')+"\n"
             
-            # 解码单条结果（注意移回CPU再解码）
-            completion_ids = generated_ids[0][len(inputs.input_ids[0]):].cpu()
-            return tokenizer.decode(completion_ids, skip_special_tokens=True)
-        
+            def single_generate(x, model, tokenizer):
+                model.to(device)
+                inputs = tokenizer(
+                    prepare_input(x, tokenizer), 
+                    return_tensors="pt", 
+                    padding=True,
+                    truncation=True
+                ).to(device)
+                
+                generated_ids = model.generate(
+                    input_ids=inputs.input_ids,
+                    attention_mask=inputs.attention_mask,
+                    max_new_tokens=1024,
+                    do_sample=True,
+                    temperature=0.7,
+                    top_p=0.9,
+                    pad_token_id=tokenizer.pad_token_id,
+                    use_cache=True,
+                    repetition_penalty=1.1
+                )
+                
+                completion_ids = generated_ids[0][len(inputs.input_ids[0]):].cpu()
+                return tokenizer.decode(completion_ids, skip_special_tokens=True)
             
-        # 将模型包装为 Runnable
-        llm = RunnableLambda(lambda x: single_generate(x, model, tokenizer))
+            llm = RunnableLambda(lambda x: single_generate(x, model, tokenizer))
     return llm
     
 
