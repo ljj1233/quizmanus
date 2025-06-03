@@ -16,7 +16,7 @@ from utils import (
     get_absolute_file_paths,
     get_json_result,
     removeDuplicates,
-    call_Hkust_api
+    call_deepseek_api
 )
 
 
@@ -51,7 +51,7 @@ def get_response(example,prompt_template):
     try: 
         # [dict_[example['type']]]
         pr = prompt_template.replace("{subject}",example['subject'].strip()).replace("{grade}",str(example['grade']).strip()).replace("{content}",example['content'].strip()).replace("{title}",example['title'].strip())
-        res = call_Hkust_api(pr)
+        res = call_deepseek_api(pr)
         context = get_json_result(res)['content']
         return {**example,"modify_content":context}
     except Exception as e:

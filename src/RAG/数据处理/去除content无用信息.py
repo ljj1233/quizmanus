@@ -30,7 +30,7 @@ def process_content(content):
     """处理单个内容并返回清理后的结果"""
     try:
         prompt = PROMPT_TEMPLATE.format(content=content)
-        response = call_Hkust_api(prompt)  # 确保这是线程安全的API调用
+        response = call_deepseek_api(prompt)  # 确保这是线程安全的API调用
         json_str = get_json_text(response)
         
         if json_str:

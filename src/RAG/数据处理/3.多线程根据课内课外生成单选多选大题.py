@@ -16,7 +16,7 @@ from utils import (
     get_absolute_file_paths,
     get_json_result,
     removeDuplicates,
-    call_Hkust_api
+    call_deepseek_api
 )
 
 
@@ -91,7 +91,7 @@ def get_response(example,prompt_template):
         else:
             pr = pr.replace("{example}","")
             
-        res = call_Hkust_api(pr,remain_reasoning = True)
+        res = call_deepseek_api(pr,remain_reasoning = True)
         think = re.search(r'<think>(.*?)</think>', res, re.DOTALL)
         if think:
             think = think.group(1).strip()  # 去除首尾空白

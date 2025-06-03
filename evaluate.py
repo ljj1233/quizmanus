@@ -16,9 +16,9 @@ from src.utils import (
     get_absolute_file_paths,
     get_json_result,
     removeDuplicates,
-    call_Hkust_api
+    call_deepseek_api
 )
-# from src.utils import call_Hkust_api,getData,get_json_result
+# from src.utils import call_deepseek_api,getData,get_json_result
 from src.config.rag import DETIALED_SUBJECTS
 from tqdm import tqdm
 
@@ -142,8 +142,8 @@ def get_response(example,prompt_template):
         
         query = example['query']
         prompt = prompt_template.replace("{query}",query).replace("{aggregated_quiz}",aggregated_quiz).replace("{catalog}",catalog)
-        # print(get_json_result(call_Hkust_api(prompt,remain_reasoning= True, temperature = 0.0,top_p = 1.0)))
-        eval_res_text= call_Hkust_api(prompt,remain_reasoning= False, config = {"temperature":0,"top_k":1,"do_sample":False})
+        # print(get_json_result(call_deepseek_api(prompt,remain_reasoning= True, temperature = 0.0,top_p = 1.0)))
+        eval_res_text= call_deepseek_api(prompt,remain_reasoning= False, config = {"temperature":0,"top_k":1,"do_sample":False})
         eval_res = get_json_result(eval_res_text)
         print(eval_res_text)
         dict_ = {**example, "eval_res_text": eval_res_text, "eval_res": eval_res}

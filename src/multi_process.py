@@ -3,6 +3,7 @@ import json
 import multiprocessing
 import threading
 import traceback
+from utils import getData, saveData, get_json_result, call_deepseek_api
 
 
 def multiprocess_thread_process(
@@ -143,11 +144,12 @@ if __name__ == '__main__':
             输出：'''
             # 处理单条记录
             content = item.get('context', '')
-            qa = call_Hkust_api(prompt.replace("{content}",content))
-            # qa = ""
-            if qa.strip() == "":
+            prompt = prompt.replace("{content}",content)
+            try:
+                qa = call_deepseek_api(prompt.replace("{content}",content))
+                return {"id": item["id"], "content": content, "qa": qa}
+            except Exception as e:
                 return None
-            return {'id': item.get('id'), 'qa': qa}
         except Exception as e:
             return None
 
