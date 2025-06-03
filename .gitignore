@@ -7,3 +7,9 @@ __pycache__/
 # ALL_KEYS.py
 
 *.env
+
+# 忽略所有 __pycache__ 目录下的 .pyc 文件
+**/__pycache__/*.pyc
+
+# 补充：如果需要忽略整个 __pycache__ 目录（可选）
+**/__pycache__/

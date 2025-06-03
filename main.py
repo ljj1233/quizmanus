@@ -15,6 +15,8 @@ from tqdm import tqdm
 import signal
 import sys
 import atexit
+import time
+from pymilvus import connections
 
 # 配置日志
 logging.basicConfig(
@@ -40,10 +42,22 @@ def cleanup_resources():
     try:
         # 显式释放BGE模型资源
         if hasattr(embeddings, '_pool') and embeddings._pool is not None:
+            embeddings._pool.shutdown()
             embeddings._pool = None
         
         if hasattr(reranker, '_pool') and reranker._pool is not None:
+            reranker._pool.shutdown()
             reranker._pool = None
+            
+        # 关闭数据库连接
+        try:
+            connections.disconnect("default")
+            print("数据库连接已关闭")
+        except Exception as e:
+            print(f"关闭数据库连接时出错: {e}")
+            
+        # 确保在退出前等待所有异步任务完成
+        time.sleep(1)
         
         print("资源清理完成")
     except Exception as e:
@@ -74,17 +88,31 @@ def run():
     }
     logger.info(f"使用模型配置: {api_config['model']}, 类型: {api_config['llm_type']}")
 
+    # 读取测试数据
     test_file_path = "dataset/test.json"
     save_dir = "quiz_results/qwen_14b_quiz_1072"
     os.makedirs(save_dir, exist_ok=True)
     logger.info(f"读取测试数据: {test_file_path}")
-    tmp_test = getData(test_file_path)
-    logger.info(f"测试数据包含 {len(tmp_test)} 条记录")
     
+    # 尝试读取测试数据，如果文件不存在则创建示例数据
+    try:
+        tmp_test = getData(test_file_path)
+        logger.info(f"测试数据包含 {len(tmp_test)} 条记录")
+    except Exception as e:
+        logger.warning(f"读取测试数据失败: {e}，创建示例数据")
+        tmp_test = [{
+            "id": "example_001",
+            "query": "生成18道人教版高中生物（必修一：分子与细胞基础）的题目，包含5道单选题、5道填空题、5道判断题和3道主观题，需涵盖细胞结构、酶活性和细胞呼吸知识点"
+        }]
+        os.makedirs(os.path.dirname(test_file_path), exist_ok=True)
+        saveData(tmp_test, test_file_path)
+    
+    # 为每条记录设置输出路径
     for item in tmp_test:
         item['quiz_url'] = os.path.join(save_dir, f"{item['id']}.md")
     saveData(tmp_test, test_file_path)
     
+    # 处理每条记录
     for idx, file_item in tqdm(enumerate(getData(test_file_path))):
         user_input = file_item['query']
         logger.info(f"处理第 {idx+1}/{len(tmp_test)} 条记录, ID: {file_item['id']}")
@@ -138,25 +166,7 @@ def statistic():
     logger.info("统计完成")
 
 if __name__ == "__main__":
-    # 构建RAG图和主图
-    rag_graph = build_rag()
-    main_graph = build_main(rag_graph)
-    
-    # 运行主图
-    main_graph.run({
-        "messages": [{
-            "role": "user",
-            "content": "生成18道人教版高中生物（必修一：分子与细胞基础）的题目，包含5道单选题、5道填空题、5道判断题和3道主观题，需涵盖细胞结构、酶活性和细胞呼吸知识点"
-        }],
-        "search_before_planning": True,
-        "deep_thinking_mode": True,
-        "rag": {
-            "embedding_model": embeddings,
-            "reranker_model": reranker,
-            "enable_browser": True
-        }
-    })
-
-# run()
-# test()
-# statistic()
+    # 调用run函数处理测试数据集
+    run()
+    # test()
+    # statistic()

@@ -17,7 +17,7 @@ from .nodes.nodes import (
 )
 from .nodes.quiz_types import State
 
-def build_main():
+def build_main(rag_graph=None):
     builder = StateGraph(State)
     builder.add_edge(START, "coordinator")
     builder.add_node("coordinator", main_coordinator)
