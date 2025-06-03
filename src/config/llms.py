@@ -2,7 +2,7 @@ import os
 from .ALL_KEYS import common_openai_key, common_openai_base_url
 
 # API配置
-openai_model = "deepseek-v3-250324"
+openai_model = "qwen-max"  # 修改为ModelScope支持的模型ID
 openai_api_key = common_openai_key
 openai_api_base = common_openai_base_url
 
