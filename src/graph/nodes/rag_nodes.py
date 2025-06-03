@@ -94,7 +94,7 @@ def rag_hyde(state: State):
             )
         except Exception as e:
             logger.error(f"解析HyDE结果失败: {str(e)}", exc_info=True)
-            print(f"解析失败: {rewrite_res} 错误: {e}")
+            print(f"解析失败：'{rewrite_res}' 错误：'{e}'")
     except Exception as e:
         logger.error(f"HyDE查询改写失败: {str(e)}", exc_info=True)
     
@@ -154,7 +154,7 @@ def rag_router(state: State):
             # 6. 验证结果是否在可用知识库中
             if result["subject"] not in SUBJECTS:
                 logger.warning(f"选择的知识库不存在: {result['subject']}")
-                print(f"第{i+1}次尝试：选择的知识库不存在: {result['subject']}")
+                print(f"第{i+1}次尝试：选择的知识库不存在：'{result['subject']}'")
                 continue
                 
             logger.info(f"选择学科: {result['subject']}, 题型: {result['question_type']}")
@@ -174,7 +174,7 @@ def rag_router(state: State):
             
         except Exception as e:
             logger.error(f"路由选择失败(尝试 #{i+1}): {str(e)}", exc_info=True)
-            print(f"模型返回非法JSON或缺少字段: {e}")
+            print(f"模型返回非法JSON或缺少字段：'{e}'")
             time.sleep(2)  # 失败后短暂等待
     
     # 如果所有尝试都失败，使用默认值
@@ -387,7 +387,7 @@ def rag_generator(state: State):
         
         # 如果所有尝试都失败，返回一个基本的错误信息
         logger.critical("所有题目生成尝试均失败")
-        error_message = f"抱歉，由于技术原因无法生成关于"{state['next_work']}"的题目。请稍后再试。"
+        error_message = f"抱歉，由于技术原因无法生成关于'{state['next_work']}'的题目。请稍后再试。"
         
         return Command(
             update = {
