@@ -12,6 +12,9 @@ import os
 import numpy as np
 from src.utils import getData, get_json_result, saveData
 from tqdm import tqdm
+import signal
+import sys
+import atexit
 
 # 配置日志
 logging.basicConfig(
@@ -29,6 +32,34 @@ seed = 42
 np.random.seed(seed)
 
 load_dotenv()  
+
+# 定义清理函数
+def cleanup_resources():
+    """清理程序使用的资源，避免异常退出"""
+    print("正在清理资源...")
+    try:
+        # 显式释放BGE模型资源
+        if hasattr(embeddings, '_pool') and embeddings._pool is not None:
+            embeddings._pool = None
+        
+        if hasattr(reranker, '_pool') and reranker._pool is not None:
+            reranker._pool = None
+        
+        print("资源清理完成")
+    except Exception as e:
+        print(f"清理资源时出错: {e}")
+
+# 注册清理函数，在程序退出时调用
+atexit.register(cleanup_resources)
+
+# 注册信号处理，确保在Ctrl+C等情况下也能清理资源
+def signal_handler(sig, frame):
+    print('接收到终止信号，正在清理...')
+    cleanup_resources()
+    sys.exit(0)
+
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
 
 def run():
     logger.info("开始构建主图")
@@ -106,6 +137,26 @@ def statistic():
         print(key, result)
     logger.info("统计完成")
 
-run()
+if __name__ == "__main__":
+    # 构建RAG图和主图
+    rag_graph = build_rag()
+    main_graph = build_main(rag_graph)
+    
+    # 运行主图
+    main_graph.run({
+        "messages": [{
+            "role": "user",
+            "content": "生成18道人教版高中生物（必修一：分子与细胞基础）的题目，包含5道单选题、5道填空题、5道判断题和3道主观题，需涵盖细胞结构、酶活性和细胞呼吸知识点"
+        }],
+        "search_before_planning": True,
+        "deep_thinking_mode": True,
+        "rag": {
+            "embedding_model": embeddings,
+            "reranker_model": reranker,
+            "enable_browser": True
+        }
+    })
+
+# run()
 # test()
 # statistic()

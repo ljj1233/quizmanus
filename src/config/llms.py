@@ -2,15 +2,18 @@ import os
 from .ALL_KEYS import common_openai_key, common_openai_base_url
 
 # API配置
-openai_model = "Qwen/Qwen2.5-7B-Instruct"  # 修改为ModelScope支持的模型ID
+openai_model = "Qwen/Qwen2.5-72B-Instruct"  # 修改为ModelScope支持的模型ID
 openai_api_key = common_openai_key
 openai_api_base = common_openai_base_url
+
+# DeepSeek模型配置
+deepseek_model = "deepseek-ai/DeepSeek-V3-0324"
 
 # 模型类型配置
 llm_type = "openai"  # openai ollama qwen
 
 # 生成模型配置
-generator_model = "qwen"
+generator_model = "deepseek"  # 使用 DeepSeek 模型作为生成器
 
 # Ollama配置
 ollama_model = "qwen2.5:72b"
@@ -24,7 +27,7 @@ reranker_model = "text-embedding-3-small"  # 使用相同的embedding模型进�
 reranker_top_k = 3  # 重排序返回的文档数量
 
 # API调用配置
-api_timeout = 180  # API调用超时时间（秒）- 增加到3分钟
-api_max_retries = 5  # API调用最大重试次数 - 增加重试次数
-api_retry_interval = 2  # 重试间隔时间（秒）
+api_timeout = 300  # API调用超时时间（秒）- 增加到5分钟
+api_max_retries = 2  # API调用最大重试次数 - 减少重试次数但增加间隔
+api_retry_interval = 5  # 重试间隔时间（秒）- 增加间隔时间
 api_batch_size = 10  # 批量处理的大小

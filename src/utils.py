@@ -66,30 +66,28 @@ def removeDuplicates(data:list)->list:
         result_list.append(tmp_dict[id])
     return result_list
 
-def getHkustClient(api_type = "DeepSeek-R1-671B"):
-    
+def getDeepseekClient(api_type = "deepseek-ai/DeepSeek-V3-0324"):
     client = OpenAI(
-        base_url = ALL_KEYS.hkust_openai_base_url,
-        api_key = ALL_KEYS.hkust_openai_key,
+        base_url = ALL_KEYS.common_openai_base_url,
+        api_key = ALL_KEYS.common_openai_key,
         http_client=httpx.Client(
-            base_url=ALL_KEYS.hkust_openai_base_url,
+            base_url=ALL_KEYS.common_openai_base_url,
             follow_redirects=True,
         ),
     )
     return client
 
-
-def call_Hkust_api(prompt, messages = [],remain_reasoning = False, api_type = "DeepSeek-R1-671B",config = {"temperature":0.7}):
+def call_deepseek_api(prompt, messages = [], remain_reasoning = False, api_type = "deepseek-ai/DeepSeek-V3-0324", config = {"temperature":0.7}):
     try:
-        url = ALL_KEYS.hkust_openai_base_url
+        url = ALL_KEYS.common_openai_base_url
         headers = { 
-        "Content-Type": "application/json", 
-        "Authorization": f"Bearer {ALL_KEYS.Authorization_hkust_key}" #Please change your KEY. If your key is XXX, the Authorization is "Authorization": "Bearer XXX"
+            "Content-Type": "application/json", 
+            "Authorization": f"Bearer {ALL_KEYS.common_openai_key}"
         }
         data = { 
-        "model": "DeepSeek-R1-671B", # # "gpt-3.5-turbo" version in gpt-4o-mini, "gpt-4" version in gpt-4o-2024-08-06
-        "messages": [{"role": "user", "content": prompt}] if messages ==[] else messages, 
-        **config
+            "model": "deepseek-ai/DeepSeek-V3-0324",
+            "messages": [{"role": "user", "content": prompt}] if messages ==[] else messages, 
+            **config
         }
         response = requests.post(url, headers=headers, data=json.dumps(data))
         if remain_reasoning:

@@ -15,7 +15,7 @@ from copy import deepcopy
 import json
 import logging
 import json_repair
-from ...utils import get_json_result,call_Hkust_api
+from ...utils import get_json_result,call_deepseek_api
 from ...config.llms import llm_type
 from ...config.rag import SUBJECTS
 # Configure logging
@@ -203,9 +203,7 @@ def main_supervisor(state: State) -> Command[Literal[*TEAM_MEMBERS, "__end__"]]:
                     {"role": role_mapping[msg["type"]], "content": msg['data']["content"],"name":msg['data']['name']}
                     for msg in dict_messages
                 ]
-                logger.info("使用hkust-deepseek-r1 API")
-                response = call_Hkust_api(prompt = "",messages = openai_format)
-                logger.info("成功获取API响应")
+                response = call_deepseek_api(prompt = "",messages = openai_format)
                 parsed_response = get_json_result(response)
             else:
                 logger.info(f"使用标准LLM: {llm_type}")
