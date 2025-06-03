@@ -5,9 +5,8 @@ from operator import add
 from langgraph.graph import StateGraph
 from openai import OpenAI
 from src.config.llms import openai_api_key, openai_api_base
-from pymilvus.model.embedding import BGEM3EmbeddingFunction
+from milvus_model.hybrid import BGEM3EmbeddingFunction
 from pymilvus.model.reranker import BGERerankFunction
-
 # 初始化OpenAI客户端
 client = OpenAI(
     api_key=openai_api_key,

@@ -3,3 +3,7 @@
 *.pyc
 
 __pycache__/
+
+# ALL_KEYS.py
+
+*.env

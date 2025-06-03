@@ -16,5 +16,10 @@ logger = logging.getLogger(__name__)
 LoggedTavilySearch = create_logged_tool(TavilySearchResults)
 tavily_tool = LoggedTavilySearch(name="tavily_search", max_results=TAVILY_MAX_RESULTS)
 
+# 使用一个简单的搜索工具替代
+# from langchain_community.tools import DuckDuckGoSearchRun
+# LoggedDuckDuckGo = create_logged_tool(DuckDuckGoSearchRun)
+# tavily_tool = LoggedDuckDuckGo(name="web_search")
+
 # searched_content = tavily_tool.invoke({"query": "出五道关于细胞壁的题目"})
 # print(searched_content)
