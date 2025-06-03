@@ -5,6 +5,8 @@ from operator import add
 from langgraph.graph import StateGraph
 from openai import OpenAI
 from src.config.llms import openai_api_key, openai_api_base
+from pymilvus.model.embedding import BGEM3EmbeddingFunction
+from pymilvus.model.reranker import BGERerankFunction
 
 # 初始化OpenAI客户端
 client = OpenAI(
@@ -12,6 +14,22 @@ client = OpenAI(
     base_url=openai_api_base
 )
 
+# 初始化BGE模型
+embeddings = BGEM3EmbeddingFunction(
+    model_name = "/hpc2hdd/home/fye374/models/BAAI/bge-m3",
+    use_fp16=False, 
+    device="cuda"
+)
+
+# 初始化BGE重排序模型
+reranker = BGERerankFunction(
+    model_name="/hpc2hdd/home/fye374/models/BAAI/bge-reranker-v2-m3",  
+    device="cuda",
+    use_fp16=False
+)
+
+# 以下是旧的实现，保留为注释以供参考
+"""
 class EmbeddingFunction:
     def __init__(self, model_name="text-embedding-3-small"):
         self.model_name = model_name
@@ -64,6 +82,7 @@ class RerankFunction:
 # 初始化embedding和reranker
 embeddings = EmbeddingFunction()
 reranker = RerankFunction()
+"""
 
 class RAGState(MessagesState):
     
@@ -71,8 +90,8 @@ class RAGState(MessagesState):
     selected_subject: str
     retrieved_docs: List[str]
     reranked_docs: List[str]
-    embedding_model: EmbeddingFunction
-    reranker_model: RerankFunction
+    embedding_model: BGEM3EmbeddingFunction
+    reranker_model: BGERerankFunction
     enable_browser: bool
     outer_knowledge: str
 
