@@ -557,11 +557,11 @@ def main_rag(state: State) -> Command[Literal["critic"]]:
     logger.info("Browser agent starting task")
     rag_state = state['rag_graph'].invoke(state)
     new_qa = str(rag_state['existed_qa'][-1])
-    fingerprint = rag_state.get("latest_fingerprint")
-    if not fingerprint:
+    rag_fingerprint = rag_state.get("latest_fingerprint")
+    if not rag_fingerprint:
         history = rag_state.get("meta_history") or []
-        fingerprint = history[-1] if history else None
-    new_q = _summarize_fingerprint(fingerprint, state['next_work'])
+        rag_fingerprint = history[-1] if history else None
+    new_q = _summarize_fingerprint(rag_fingerprint, state['next_work'])
     # if "参考答案" in new_qa:
     #     new_q = new_qa.split("参考答案")[0].strip()
     # elif "答案" in new_qa:
@@ -572,7 +572,6 @@ def main_rag(state: State) -> Command[Literal["critic"]]:
     # 尝试修复可能的JSON输出
     # response_content = repair_json_output(response_content)
     logger.info(f"RAG agent response: {new_qa}")
-    fingerprint = state.get("current_generator_step", {}).get("fingerprint")
     return Command(
         update={
             "existed_qa": [new_qa],
@@ -582,7 +581,7 @@ def main_rag(state: State) -> Command[Literal["critic"]]:
                     name="rag_er",
                 )
             ],
-            "latest_fingerprint": fingerprint,
+            "latest_fingerprint": rag_fingerprint,
         },
         goto="critic",
     )
@@ -598,26 +597,25 @@ def main_rag_browser(state: State) -> Command[Literal["critic"]]:
     #     new_q = new_qa.split("答案")[0].strip()
     # else:
     #     new_q = new_qa
-    fingerprint = rag_state.get("latest_fingerprint")
-    if not fingerprint:
+    rag_fingerprint = rag_state.get("latest_fingerprint")
+    if not rag_fingerprint:
         history = rag_state.get("meta_history") or []
-        fingerprint = history[-1] if history else None
-    new_q = _summarize_fingerprint(fingerprint, state['next_work'])
+        rag_fingerprint = history[-1] if history else None
+    new_q = _summarize_fingerprint(rag_fingerprint, state['next_work'])
     logger.info("RAG agent completed task")
     # 尝试修复可能的JSON输出
     # response_content = repair_json_output(response_content)
     logger.info(f"RAG agent response: {new_qa}")
-    fingerprint = state.get("current_generator_step", {}).get("fingerprint")
     return Command(
         update={
             "existed_qa": [new_qa],
             "messages": [
                 HumanMessage(
                     content=new_q,
-                    name="rag_er",
+                    name="rag_and_browser",
                 )
             ],
-            "latest_fingerprint": fingerprint,
+            "latest_fingerprint": rag_fingerprint,
         },
         goto="critic",
     )
