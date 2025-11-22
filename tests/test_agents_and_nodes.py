@@ -185,6 +185,72 @@ def test_fill_missing_questions_generates_from_planned_steps(monkeypatch):
     assert fake_rag_graph.calls == 1
 
 
+def test_main_critic_passes_and_tracks_fingerprint():
+    state = {
+        "rag": {"enable_browser": False},
+        "existed_qa": ["question"],
+        "current_generator_step": {
+            "agent_name": "rag_er",
+            "fingerprint": "fp-1",
+            "title": "Q1",
+            "difficulty": "easy",
+        },
+        "question_fingerprints": [],
+    }
+
+    command = nodes.main_critic(state)
+
+    assert command.goto == "supervisor"
+    assert command.update["critic_result"] == {"status": "passed", "feedback": ""}
+    assert "fp-1" in command.update["question_fingerprints"]
+
+
+def test_main_critic_rejects_and_reroutes_to_generator():
+    state = {
+        "rag": {"enable_browser": False},
+        "existed_qa": ["another question"],
+        "current_generator_step": {
+            "agent_name": "rag_and_browser",
+            "fingerprint": "dup",
+            "description": "redo with sources",
+            "title": "Q2",
+        },
+        "question_fingerprints": ["dup"],
+        "pending_generator_steps": [],
+        "generator_retry_counts": {},
+    }
+
+    command = nodes.main_critic(state)
+
+    assert command.goto == "rag_and_browser"
+    assert command.update["critic_result"]["status"] == "rejected"
+    assert command.update["pending_generator_steps"][0]["feedback"].startswith("题目指纹重复")
+    assert command.update["next_work"] == "redo with sources"
+    assert command.update["rag"]["enable_browser"] is True
+
+
+def test_main_critic_stops_after_max_retries():
+    state = {
+        "rag": {},
+        "existed_qa": ["question"],
+        "current_generator_step": {
+            "agent_name": "rag_er",
+            "fingerprint": "dup",
+            "title": "Q1",
+        },
+        "question_fingerprints": ["dup"],
+        "pending_generator_steps": [],
+        "generator_retry_counts": {"Q1": nodes.MAX_CRITIC_RETRIES - 1},
+    }
+
+    command = nodes.main_critic(state)
+
+    assert command.goto == "supervisor"
+    assert command.update["critic_result"]["status"] == "rejected"
+    assert command.update["generator_retry_counts"]["Q1"] == nodes.MAX_CRITIC_RETRIES
+    assert command.update.get("pending_generator_steps", []) == []
+
+
 def test_main_supervisor_writes_fallback_when_no_report(monkeypatch, tmp_path):
     dummy_llm = DummyLLM(['{"next": "FINISH", "next_step_content": ""}'])
     monkeypatch.setattr(nodes, "get_llm_by_type", lambda *_args, **_kwargs: dummy_llm)

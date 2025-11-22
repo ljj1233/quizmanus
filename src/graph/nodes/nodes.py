@@ -29,6 +29,9 @@ import re
 logger = logging.getLogger(__name__)
 
 
+MAX_CRITIC_RETRIES = 2
+
+
 @dataclass
 class PlanStep:
     agent_name: Literal["rag_er", "rag_and_browser"]
@@ -244,6 +247,84 @@ def fill_missing_questions(state: State):
     new_questions, new_messages, failed_steps = run_generator_concurrently(state, pending_steps)
     return new_questions, new_messages, failed_steps
 
+
+def _step_key(step: Dict) -> str:
+    """Generate a stable key for tracking retries of a generator step."""
+
+    return step.get("title") or step.get("description") or step.get("agent_name") or "unknown"
+
+
+def main_critic(state: State) -> Command[Literal["supervisor", "rag_er", "rag_and_browser"]]:
+    """Critic node to validate generated questions before reporting.
+
+    Performs deduplication via fingerprints, checks for empty questions,
+    and validates the declared difficulty if provided. Returns feedback and
+    reroutes to the generator when remediation is possible.
+    """
+
+    current_step = state.get("current_generator_step", {}) or {}
+    fingerprint = state.get("latest_fingerprint") or current_step.get("fingerprint")
+    question_fingerprints = list(state.get("question_fingerprints", []))
+    retry_counts = dict(state.get("generator_retry_counts", {}))
+    question = state.get("existed_qa", [])[-1] if state.get("existed_qa") else ""
+
+    status: Literal["passed", "rejected"] = "passed"
+    feedback = ""
+
+    if not question:
+        status = "rejected"
+        feedback = "生成的题目内容为空，无法通过审核。"
+    elif fingerprint and fingerprint in question_fingerprints:
+        status = "rejected"
+        feedback = "题目指纹重复，疑似生成了重复题目。"
+    elif current_step.get("difficulty") and current_step["difficulty"] not in {"easy", "medium", "hard"}:
+        status = "rejected"
+        feedback = f"题目难度{current_step['difficulty']}不符合要求。"
+
+    if status == "passed":
+        if fingerprint:
+            question_fingerprints.append(fingerprint)
+        return Command(
+            goto="supervisor",
+            update={
+                "critic_result": {"status": status, "feedback": feedback},
+                "question_fingerprints": question_fingerprints,
+            },
+        )
+
+    step_identifier = _step_key(current_step)
+    retry_counts[step_identifier] = retry_counts.get(step_identifier, 0) + 1
+
+    updates: Dict = {
+        "critic_result": {"status": status, "feedback": feedback},
+        "generator_retry_counts": retry_counts,
+    }
+
+    if retry_counts[step_identifier] >= MAX_CRITIC_RETRIES:
+        # Stop retrying and hand control back to supervisor for a decision.
+        return Command(goto="supervisor", update=updates)
+
+    pending_steps = list(state.get("pending_generator_steps", []))
+    retry_step = {**current_step, "feedback": feedback}
+    pending_steps.insert(0, retry_step)
+
+    updates["pending_generator_steps"] = pending_steps
+
+    target = current_step.get("agent_name", "supervisor")
+    if target in {"rag_er", "rag_and_browser"}:
+        updates.update(
+            {
+                "next": target,
+                "next_work": retry_step.get("description", ""),
+                "rag": {
+                    **state["rag"],
+                    "enable_browser": target == "rag_and_browser",
+                },
+            }
+        )
+
+    return Command(goto=target, update=updates)
+
     
 RESPONSE_FORMAT = "{}的回复:\n\n<response>\n{}\n</response>\n\n*请执行下一步.*"
 def main_supervisor(state: State) -> Command[Literal[*TEAM_MEMBERS, "__end__"]]:
@@ -324,6 +405,7 @@ def main_supervisor(state: State) -> Command[Literal[*TEAM_MEMBERS, "__end__"]]:
                         **state["rag"],
                         "enable_browser": next_pending["agent_name"] == "rag_and_browser",
                     },
+                    "current_generator_step": next_pending,
                 }
             )
         else:
@@ -387,7 +469,7 @@ def main_browser_generator(state: State) -> Command[Literal["supervisor"]]:
     )
 
 
-def main_rag(state: State) -> Command[Literal["supervisor"]]:
+def main_rag(state: State) -> Command[Literal["critic"]]:
     """Node for the RAG that performs RAG tasks."""
     logger.info("Browser agent starting task")
     rag_state = state['rag_graph'].invoke(state)
@@ -407,6 +489,7 @@ def main_rag(state: State) -> Command[Literal["supervisor"]]:
     # 尝试修复可能的JSON输出
     # response_content = repair_json_output(response_content)
     logger.info(f"RAG agent response: {new_qa}")
+    fingerprint = state.get("current_generator_step", {}).get("fingerprint")
     return Command(
         update={
             "existed_qa": [new_qa],
@@ -415,12 +498,13 @@ def main_rag(state: State) -> Command[Literal["supervisor"]]:
                     content=new_q,
                     name="rag_er",
                 )
-            ]
+            ],
+            "latest_fingerprint": fingerprint,
         },
-        goto="supervisor",
+        goto="critic",
     )
 
-def main_rag_browser(state: State) -> Command[Literal["supervisor"]]:
+def main_rag_browser(state: State) -> Command[Literal["critic"]]:
     """Node for the RAG that performs RAG tasks."""
     logger.info("Browser agent starting task")
     rag_state = state['rag_graph'].invoke(state)
@@ -440,6 +524,7 @@ def main_rag_browser(state: State) -> Command[Literal["supervisor"]]:
     # 尝试修复可能的JSON输出
     # response_content = repair_json_output(response_content)
     logger.info(f"RAG agent response: {new_qa}")
+    fingerprint = state.get("current_generator_step", {}).get("fingerprint")
     return Command(
         update={
             "existed_qa": [new_qa],
@@ -448,9 +533,10 @@ def main_rag_browser(state: State) -> Command[Literal["supervisor"]]:
                     content=new_q,
                     name="rag_er",
                 )
-            ]
+            ],
+            "latest_fingerprint": fingerprint,
         },
-        goto="supervisor",
+        goto="critic",
     )
 
 
