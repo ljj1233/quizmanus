@@ -92,3 +92,53 @@ def test_fill_missing_questions_generates_from_planned_steps(monkeypatch):
     assert "Q2" in messages[0].content
     assert failed == []
     assert fake_rag_graph.calls == 1
+
+
+def test_main_supervisor_writes_fallback_when_no_report(monkeypatch, tmp_path):
+    dummy_llm = DummyLLM(['{"next": "FINISH", "next_step_content": ""}'])
+    monkeypatch.setattr(nodes, "get_llm_by_type", lambda *_args, **_kwargs: dummy_llm)
+    monkeypatch.setattr(nodes, "fill_missing_questions", lambda _state: ([], [], []))
+    monkeypatch.setattr(
+        nodes,
+        "apply_prompt_template",
+        lambda *_args, **_kwargs: [HumanMessage(content="summary", name="planner")],
+    )
+
+    quiz_file = tmp_path / "quiz.md"
+    state = {
+        "messages": [HumanMessage(content="fallback report", name="planner")],
+        "rag": {},
+        "quiz_url": str(quiz_file),
+        "existed_qa": [],
+        "pending_generator_steps": [],
+    }
+
+    command = nodes.main_supervisor(state)
+
+    assert command.goto == "__end__"
+    assert quiz_file.exists()
+    assert quiz_file.read_text() == "fallback report"
+
+
+def test_rag_reranker_survives_browser_failure(monkeypatch):
+    monkeypatch.setattr(rag_nodes, "rerank", lambda **_: ["doc1"])
+
+    class FailingBrowser:
+        def invoke(self, _state):
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(rag_nodes, "knowledge_based_browser", FailingBrowser())
+
+    state = {
+        "rag": {
+            "hyde_query": "query",
+            "retrieved_docs": ["doc"],
+            "reranker_model": object(),
+            "enable_browser": True,
+        }
+    }
+
+    command = rag_nodes.rag_reranker(state)
+
+    assert command.goto == "generator"
+    assert command.update["rag"]["outer_knowledge"] == ""

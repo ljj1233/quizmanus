@@ -1,12 +1,6 @@
 import os
-os.environ['CUDA_VISIBLE_DEVICES'] = '0'
-os.environ['VLLM_ATTENTION_BACKEND'] = 'FLASHINFER'
-os.environ['VLLM_USE_FLASHINFER_SAMPLER'] = '1'
-
-import sys
-sys.path.append("/hpc2hdd/home/fye374/ZWZ_Other/quizmanus")
-
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Request, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from vllm import LLM, SamplingParams
 from src.graph.builder import build_rag,build_main
 from langgraph.graph import MessagesState
@@ -15,8 +9,6 @@ from src.graph.nodes.quiz_types import embeddings, reranker
 # from modelscope import AutoModelForCausalLM, AutoTokenizer
 import os
 import torch
-from transformers import BitsAndBytesConfig
-from peft import PeftModel
 from src.utils import getData,get_json_result,saveData
 from tqdm import tqdm
 from src.config.llms import generator_model,qwen_model_path,qwen_tokenizer_path,vllm_sampling_params
@@ -24,7 +16,6 @@ from src.config.llms import generator_model,qwen_model_path,qwen_tokenizer_path,
 import numpy as np
 # from src.config.llms import openai_model, openai_api_key, openai_api_base, ollama_model, ollama_num_ctx,vllm_sampling_params
 from src.config.llms import eval_llm_type,eval_model
-import torch
 from transformers import AutoTokenizer
 from milvus_model.hybrid import BGEM3EmbeddingFunction
 from pymilvus.model.reranker import BGERerankFunction
@@ -36,6 +27,11 @@ from src.RAG.pdf_ingestion import (
     ingest_markdown_into_milvus,
     parse_pdf_with_mineru,
 )
+
+load_dotenv()
+
+os.environ.setdefault('VLLM_ATTENTION_BACKEND', 'FLASHINFER')
+os.environ.setdefault('VLLM_USE_FLASHINFER_SAMPLER', '1')
 
 app = FastAPI()
 model: LLM = None
@@ -153,6 +149,7 @@ async def upload_pdf(
     file: UploadFile = File(...),
     collection_name: str = "user_uploads",
     keep_images: bool = False,
+    background_tasks: BackgroundTasks = None,
 ):
     suffix = Path(file.filename).suffix.lower()
     saved_path = UPLOAD_ROOT / file.filename
@@ -160,19 +157,22 @@ async def upload_pdf(
 
     try:
         if suffix == ".pdf":
-            markdown_path = parse_pdf_with_mineru(saved_path, UPLOAD_ROOT, keep_images=keep_images)
+            markdown_path = await run_in_threadpool(
+                parse_pdf_with_mineru, saved_path, UPLOAD_ROOT, keep_images
+            )
         elif suffix in {".md", ".markdown", ".txt"}:
             markdown_path = saved_path
         else:
             raise HTTPException(status_code=400, detail="仅支持上传 pdf、md、markdown 或 txt 文件。")
 
-        inserted_chunks = ingest_markdown_into_milvus(
+        insert_call = lambda: ingest_markdown_into_milvus(
             markdown_path=markdown_path,
             db_uri=MILVUS_URI,
             collection_name=collection_name,
             embedding_model_name=BGE_MODEL_NAME,
             embedding_device=EMBEDDING_DEVICE,
         )
+        inserted_chunks = await run_in_threadpool(insert_call)
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
     except Exception as exc:
