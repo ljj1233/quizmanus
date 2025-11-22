@@ -34,6 +34,97 @@ class DummyRagGraph:
         return {"existed_qa": [f"generated-{self.calls}"]}
 
 
+def test_extract_question_fingerprint_basic():
+    state = {
+        "next_work": "title: Optics\ndescription: Lens behavior",
+        "rag": {"type": "单选题"},
+        "meta_history": [],
+    }
+
+    fingerprint, duplicate = rag_nodes.extract_question_fingerprint(state, "题干；...参考答案")
+
+    assert duplicate is False
+    assert fingerprint["id"] == 1
+    assert fingerprint["topic"] == "Optics"
+    assert fingerprint["focus"] == "Lens behavior"
+    assert fingerprint["question_type"] == "单选题"
+
+
+def test_extract_question_fingerprint_detects_duplicates():
+    existing = [{"id": 3, "topic": "Optics", "focus": "Lens behavior", "question_type": "单选题"}]
+    state = {
+        "next_work": "title: Optics\ndescription: Lens behavior",
+        "rag": {"type": "单选题"},
+        "meta_history": existing,
+    }
+
+    fingerprint, duplicate = rag_nodes.extract_question_fingerprint(state, "题干；...参考答案")
+
+    assert duplicate is True
+    assert fingerprint == existing[0]
+
+
+def test_rag_generator_appends_meta_history(monkeypatch):
+    monkeypatch.setattr(rag_nodes, "generator_model", "gemini")
+    fake_llm = DummyLLM(["题干；测试题目\n参考答案：A"])
+    monkeypatch.setattr(rag_nodes, "get_llm_by_type", lambda **_: fake_llm)
+
+    state = {
+        "existed_qa": [],
+        "next_work": "title: Gravity\ndescription: Free fall",
+        "meta_history": [],
+        "rag": {
+            "reranked_docs": ["doc"],
+            "retrieved_docs": ["doc"],
+            "outer_knowledge": "",
+            "type": "单选题",
+            "subject": "physics",
+            "hyde_query": "q",
+            "reranker_model": object(),
+            "embedding_model": object(),
+            "enable_browser": False,
+            "get_input": False,
+        },
+    }
+
+    command = rag_nodes.rag_generator(state)
+
+    assert command.update["meta_history"][0]["topic"] == "Gravity"
+    assert command.update["meta_history"][0]["id"] == 1
+    assert command.update["latest_fingerprint"]["focus"] == "Free fall"
+
+
+def test_rag_generator_skips_duplicate_meta(monkeypatch):
+    monkeypatch.setattr(rag_nodes, "generator_model", "gemini")
+    fake_llm = DummyLLM(["题干；测试题目\n参考答案：A"])
+    monkeypatch.setattr(rag_nodes, "get_llm_by_type", lambda **_: fake_llm)
+
+    meta_entry = {"id": 2, "topic": "Gravity", "focus": "Free fall", "question_type": "单选题"}
+    state = {
+        "existed_qa": [],
+        "next_work": "title: Gravity\ndescription: Free fall",
+        "meta_history": [meta_entry],
+        "rag": {
+            "reranked_docs": ["doc"],
+            "retrieved_docs": ["doc"],
+            "outer_knowledge": "",
+            "type": "单选题",
+            "subject": "physics",
+            "hyde_query": "q",
+            "reranker_model": object(),
+            "embedding_model": object(),
+            "enable_browser": False,
+            "get_input": False,
+        },
+    }
+
+    command = rag_nodes.rag_generator(state)
+
+    assert command.update["meta_history"] == []
+    assert command.update["latest_fingerprint"] == meta_entry
+
+
+
 def test_create_agent_uses_factory(monkeypatch):
     captured = {}
 
