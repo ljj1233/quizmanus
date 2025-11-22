@@ -1,171 +1,198 @@
-import httpx
-from openai import OpenAI
-import requests
-import torch 
-import time
+from __future__ import annotations
+
 import json
+import logging
 import os
 import re
-from typing import List, Dict, Union
-from tqdm import tqdm
-import sys
-sys.path.append("/hpc2hdd/home/fye374/ZWZ_Other/quizmanus")
-import ALL_KEYS
 from pathlib import Path
-from langchain_core.messages import HumanMessage, SystemMessage, BaseMessage
+from typing import Any, Dict, List, Sequence
 
-def getData(path:str)->list:
+import httpx
+import json_repair
+import requests
+from openai import OpenAI
+from tqdm import tqdm
+
+from src.config.env import get_common_openai_settings, get_hkust_settings
+
+logger = logging.getLogger(__name__)
+
+
+def getData(path: str) -> list | str:
+    """Load structured text data from supported file types."""
+
     if not os.path.exists(path):
         return []
-    
-    if path.endswith('.json'):    
-        with open(path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-    elif path.endswith('.txt'):   
-        with open(path, 'r', encoding='utf-8') as f:
-            # 对于txt文件，逐行读取并将每一行添加到数据列表中
-            data = [line.strip() for line in f]
-    elif path.endswith('.jsonl'):   
-        with open(path, 'r', encoding='utf-8') as f:
-            data = [json.loads(line) for line in tqdm(f) if line.strip()]
+
+    if path.endswith(".json"):
+        with open(path, "r", encoding="utf-8") as file:
+            data = json.load(file)
+    elif path.endswith(".txt"):
+        with open(path, "r", encoding="utf-8") as file:
+            data = [line.strip() for line in file]
+    elif path.endswith(".jsonl"):
+        with open(path, "r", encoding="utf-8") as file:
+            data = [json.loads(line) for line in tqdm(file) if line.strip()]
     elif path.endswith(".md"):
-        # 使用 pathlib 处理路径
         md_file = Path(path)
-        data = md_file.read_text(encoding='utf-8')
+        data = md_file.read_text(encoding="utf-8")
     else:
-        raise ValueError("Unsupported file type: %s" % path)
+        raise ValueError(f"Unsupported file type: {path}")
     return data
 
-def saveData(data:list, path:str)->None:
-    if path.endswith('json'):
-        with open(path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=4)
-    elif path.endswith('jsonl'):
-        with open(path, 'w', encoding='utf-8') as f:
+
+def saveData(data: list, path: str) -> None:
+    """Persist structured data to json/jsonl/txt files."""
+
+    if path.endswith("json"):
+        with open(path, "w", encoding="utf-8") as file:
+            json.dump(data, file, ensure_ascii=False, indent=4)
+    elif path.endswith("jsonl"):
+        with open(path, "w", encoding="utf-8") as file:
             if isinstance(data, (list, dict)):
                 for item in data if isinstance(data, list) else data.values():
-                    f.write(json.dumps(item, ensure_ascii=False) + '\n')
-    elif path.endswith('txt'):
-        with open(path, 'w', encoding='utf-8') as f:
+                    file.write(json.dumps(item, ensure_ascii=False) + "\n")
+    elif path.endswith("txt"):
+        with open(path, "w", encoding="utf-8") as file:
             for item in data:
-                f.write("%s\n" % item)
+                file.write(f"{item}\n")
     else:
-        raise ValueError("Unsupported file type: %s" % path)
-    
-def removeDuplicates(data:list)->list:
-    '''
-    去重，取最后出现的。
-    '''
+        raise ValueError(f"Unsupported file type: {path}")
+
+
+def removeDuplicates(data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Remove duplicate items by id while keeping the last occurrence."""
+
     ids = []
     for item in data:
-        if item['id'] not in ids:
-            ids.append(item['id'])
-    tmp_dict = {}
-    result_list = []
+        if item["id"] not in ids:
+            ids.append(item["id"])
+    tmp_dict: Dict[str, Dict[str, Any]] = {}
+    result_list: List[Dict[str, Any]] = []
     for item in data:
-        tmp_dict[item['id']] = item
-    for id in ids:
-        result_list.append(tmp_dict[id])
+        tmp_dict[item["id"]] = item
+    for id_value in ids:
+        result_list.append(tmp_dict[id_value])
     return result_list
 
-def getHkustClient(api_type = "DeepSeek-R1-671B"):
-    
+
+def getHkustClient(api_type: str = "DeepSeek-R1-671B") -> OpenAI:
+    """Build an OpenAI-compatible client for HKUST endpoints."""
+
+    settings = get_hkust_settings()
+    if not settings.base_url or not settings.api_key:
+        raise ValueError("HKUST_OPENAI_BASE_URL and HKUST_OPENAI_KEY must be configured.")
     client = OpenAI(
-        base_url = ALL_KEYS.hkust_openai_base_url,
-        api_key = ALL_KEYS.hkust_openai_key,
+        base_url=settings.base_url,
+        api_key=settings.api_key,
         http_client=httpx.Client(
-            base_url=ALL_KEYS.hkust_openai_base_url,
+            base_url=settings.base_url,
             follow_redirects=True,
         ),
     )
     return client
 
 
-def call_Hkust_api(prompt, messages = [],remain_reasoning = False, api_type = "DeepSeek-R1-671B",config = {"temperature":0.7}):
+def call_Hkust_api(
+    prompt: str,
+    messages: Sequence[Dict[str, str]] | None = None,
+    remain_reasoning: bool = False,
+    api_type: str = "DeepSeek-R1-671B",
+    config: Dict[str, Any] | None = None,
+) -> str:
+    payload_messages = [{"role": "user", "content": prompt}] if not messages else list(messages)
+    merged_config: Dict[str, Any] = {"temperature": 0.7, **(config or {})}
+    settings = get_hkust_settings()
+    if not settings.base_url or not settings.api_key:
+        logger.error("HKUST OpenAI endpoint is not configured.")
+        return ""
     try:
-        url = ALL_KEYS.hkust_openai_base_url
-        headers = { 
-        "Content-Type": "application/json", 
-        "Authorization": f"Bearer {ALL_KEYS.Authorization_hkust_key}" #Please change your KEY. If your key is XXX, the Authorization is "Authorization": "Bearer XXX"
-        }
-        data = { 
-        "model": "DeepSeek-R1-671B", # # "gpt-3.5-turbo" version in gpt-4o-mini, "gpt-4" version in gpt-4o-2024-08-06
-        "messages": [{"role": "user", "content": prompt}] if messages ==[] else messages, 
-        **config
-        }
-        response = requests.post(url, headers=headers, data=json.dumps(data))
-        if remain_reasoning:
-            return response.json()['choices'][0]['message']['content']
-        else:
-            return re.sub(r'<think>.*?</think>', '', response.json()['choices'][0]['message']['content'], flags=re.DOTALL).strip()
-    except Exception as e:
-        print(f"An error occurred: {e}")
+        response = requests.post(
+            settings.base_url,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {settings.authorization or settings.api_key}",
+            },
+            data=json.dumps(
+                {
+                    "model": api_type,
+                    "messages": payload_messages,
+                    **merged_config,
+                }
+            ),
+            timeout=30,
+        )
+        response.raise_for_status()
+        content = response.json().get("choices", [{}])[0].get("message", {}).get("content", "")
+        if not remain_reasoning:
+            content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+        return content
+    except Exception as exc:
+        logger.error("HKUST API call failed: %s", exc)
         return ""
 
-def getClient(api_type = "gpt-4o-mini")->OpenAI:
 
+def getClient(api_type: str = "gpt-4o-mini") -> OpenAI:
+    """Build an OpenAI client using shared COMMON settings."""
+
+    settings = get_common_openai_settings()
+    if not settings.base_url or not settings.api_key:
+        raise ValueError("COMMON_OPENAI_BASE_URL and COMMON_OPENAI_KEY must be configured.")
     client = OpenAI(
-        base_url = ALL_KEYS.common_openai_base_url,
-        api_key = ALL_KEYS.common_openai_key,
+        base_url=settings.base_url,
+        api_key=settings.api_key,
         http_client=httpx.Client(
-            base_url=ALL_KEYS.common_openai_base_url,
+            base_url=settings.base_url,
             follow_redirects=True,
         ),
     )
     return client
 
-def call_api(prompt, api_type = 'gpt-4o-mini'):
+
+def call_api(prompt: str, api_type: str = "gpt-4o-mini") -> object | str:
+    """Simple wrapper to invoke chat completions."""
+
     try:
         response = getClient(api_type).chat.completions.create(
             model=api_type,
-            # temperature=float(temperature),
-            # max_tokens=int(max_tokens),
-            # top_p=float(top_p),
             messages=[
-                # {"role": "system", "content": ""},
                 {"role": "user", "content": prompt},
             ],
         )
         return response
-    except Exception as e:
-        print(f"An error occurred: {e}")
+    except Exception as exc:
+        logger.error("OpenAI API call failed: %s", exc)
         return ""
-    
-        
-import re
-def get_list_text(text):
 
-    # text = "dawd[\"asdada\"]dadaw"
-    match = re.search(r'\[(.*?)\]', text)
-    if match:
-        full_match = match.group(0)  # 这将取出包括方括号在内的完整匹配
-        return full_match
-    return -1
-def get_json_text(text):
 
-    # text = "dawd[\"asdada\"]dadaw"
-    match = re.search(r'\{(.*?)\}', text)
+def get_list_text(text: str) -> str | int:
+    match = re.search(r"\[(.*?)\]", text)
     if match:
-        full_match = match.group(0)  # 这将取出包括方括号在内的完整匹配
+        full_match = match.group(0)
         return full_match
     return -1
 
 
-def get_absolute_file_paths(absolute_dir,file_type)->List[str]:
-    '''
+def get_json_text(text: str) -> str | int:
+    match = re.search(r"\{(.*?)\}", text)
+    if match:
+        full_match = match.group(0)
+        return full_match
+    return -1
+
+
+def get_absolute_file_paths(absolute_dir: str, file_type: str) -> List[str]:
+    """
     absolute_dir: 文件夹
     file_type: "md","json"...
-    '''
-    json_files = [os.path.join(absolute_dir,f) for f in os.listdir(absolute_dir) if f.endswith(f".{file_type}")]
+    """
+
+    json_files = [os.path.join(absolute_dir, f) for f in os.listdir(absolute_dir) if f.endswith(f".{file_type}")]
     return json_files
 
 
-from langchain_core.output_parsers import JsonOutputParser
-import json_repair
-def get_json_result(text):
-    # parser = JsonOutputParser()
-    # parsed_response = parser.parse(text)
+def get_json_result(text: str) -> Any:
     parsed_response = json_repair.loads(text)
-    if isinstance(parsed_response,list):
+    if isinstance(parsed_response, list):
         parsed_response = parsed_response[-1]
     return parsed_response

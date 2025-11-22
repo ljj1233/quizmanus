@@ -45,3 +45,8 @@
   ```bash
   curl -F "file=@/path/to/book.pdf" "http://localhost:18001/upload_pdf?collection_name=my_pdf"
   ```
+
+## 配置
+- LLM 接入：设置 `COMMON_OPENAI_BASE_URL`/`COMMON_OPENAI_KEY`，如需 HKUST 路由配置 `HKUST_OPENAI_BASE_URL`、`HKUST_OPENAI_KEY`、`HKUST_AUTHORIZATION_KEY`；Gemini 使用 `GEMINI_MODEL`、`GEMINI_API_BASE`、`GEMINI_API_KEY`。
+- 本地生成模型：通过 `QWEN_MODEL_PATH`、`QWEN_TOKENIZER_PATH` 指定模型与分词器目录，默认回退到仓库 `models/` 目录下的占位路径。
+- 向量库：使用 `MILVUS_URI`（文件路径或服务地址）与 `MILVUS_COLLECTION_NAME` 控制存储位置。

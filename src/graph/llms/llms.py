@@ -1,4 +1,3 @@
-
 from openai import OpenAI
 import ollama
 import sys
@@ -11,6 +10,7 @@ from langchain.schema.runnable import RunnableLambda
 
 import requests
 import json
+import httpx
 
 import torch
 import logging
@@ -151,4 +151,3 @@ def get_llm_by_type(type,model = None,tokenizer = None):
         llm = RunnableLambda(lambda x: single_generate(x, model, tokenizer))
     return llm
     
-

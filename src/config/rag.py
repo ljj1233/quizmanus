@@ -1,9 +1,11 @@
-import sys
+import os
+from pathlib import Path
 
+from .env import get_path_from_env
 
-from ..utils import get_absolute_file_paths
-COLLECTION_NAME = "subjects"
-DB_URI = "/hpc2hdd/home/fye374/ZWZ_Other/quizmanus/src/RAG/vector_store/subjects.db" 
+COLLECTION_NAME = os.getenv("MILVUS_COLLECTION_NAME", "subjects")
+DEFAULT_DB_URI = Path(__file__).resolve().parents[1] / "RAG" / "vector_store" / "subjects.db"
+DB_URI = get_path_from_env("MILVUS_URI", str(DEFAULT_DB_URI))
 
 # from ..RAG.vector_store_utils import get_collection
 # col = get_collection(DB_URI,COLLECTION_NAME)
