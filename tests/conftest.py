@@ -63,6 +63,21 @@ if "langchain_core" not in sys.modules:
 
     output_parsers.JsonOutputParser = JsonOutputParser
 
+    class PydanticOutputParser:
+        def __init__(self, pydantic_object):
+            self.pydantic_object = pydantic_object
+
+        def parse(self, text):
+            data = json.loads(text)
+            if hasattr(self.pydantic_object, "model_validate"):
+                try:
+                    return self.pydantic_object.model_validate(data)
+                except Exception:
+                    return self.pydantic_object(**data)
+            return self.pydantic_object(**data)
+
+    output_parsers.PydanticOutputParser = PydanticOutputParser
+
     tools_mod = types.ModuleType("langchain_core.tools")
 
     def tool(func=None, *args, **kwargs):
