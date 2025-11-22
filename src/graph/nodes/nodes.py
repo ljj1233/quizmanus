@@ -80,7 +80,7 @@ def main_planner(state: State):
                     #     goto = "__end__"
                     # )
                     continue
-                logger.info(f"router: {result["subject"]}")
+                logger.info("router: %s", result["subject"])
                 return result["subject"]
             except Exception as e:
                 logger.warning(f"模型返回非法JSON: {response} {e}")
@@ -138,8 +138,7 @@ def main_planner(state: State):
         need_to_generate = [resi for resi in repaired_response['steps'] if resi['agent_name'] in generator_agents]
         full_response = json.dumps(repaired_response, ensure_ascii=False, indent=2)
         ## asyncio_generator 串行生成每道题目，目前还没实现并行
-        existed_qa,messages = asyncio_generator(state,need_to_generate)
-        state['existed_qa'].extend(existed_qa)
+        existed_qa, messages, failed_steps = asyncio_generator(state, need_to_generate)
         messages_tmp.extend(messages)
 
     except json.JSONDecodeError:
@@ -151,11 +150,15 @@ def main_planner(state: State):
         update={
             "messages": return_value_of_extend,
             "full_plan": full_response,
+            "planned_generator_steps": need_to_generate if 'need_to_generate' in locals() else [],
+            "planned_question_count": len(need_to_generate) if 'need_to_generate' in locals() else 0,
+            "pending_generator_steps": failed_steps if 'failed_steps' in locals() else [],
+            "existed_qa": state.get("existed_qa", []) + (existed_qa if 'existed_qa' in locals() else []),
         },
         goto=goto,
     )
 
-def asyncio_generator(state: State,need_to_generate: List):
+def asyncio_generator(state: State, need_to_generate: List):
     '''
     串行生成每道题目，目前还没实现并行
     返回existed_qa和messages
@@ -163,6 +166,7 @@ def asyncio_generator(state: State,need_to_generate: List):
     existed_qa = []
     messages = []
     inputs = []
+    failed_steps = []
     ## 循环获取batch生成题目的输入messages
     for needi in need_to_generate:
         try:
@@ -171,15 +175,12 @@ def asyncio_generator(state: State,need_to_generate: List):
                 "enable_browser": False if needi['agent_name'] == "rag_er" else True
             }
             ## True为获取输入用于batch生成
-            if generator_model == "qwen":
-                updated_rag['get_input'] = True
-            else:
-                updated_rag['get_input'] = False
+            updated_rag['get_input'] = generator_model == "qwen"
             if "note" in needi and len(needi['note'].strip())>0:
                 next_step_content = f"title: {needi['title']}\ndescription: {needi['description']}\nnote:{needi['note']}"
             else:
                 next_step_content = f"title: {needi['title']}\ndescription: {needi['description']}"
-            
+
             logger.info("Browser agent starting task")
             needi_state = {**state}
             needi_state["next_work"] = next_step_content
@@ -199,11 +200,28 @@ def asyncio_generator(state: State,need_to_generate: List):
             )
         except Exception as e:
             logger.error(f"asyncio_generator error: {e}")
-    if generator_model == "qwen":
+            failed_steps.append(needi)
+    if generator_model == "qwen" and inputs:
         ## batch生成题目
         existed_qa = get_llm_by_type(type = "qwen",model = state['generate_model'],tokenizer =state['generate_tokenizer']).invoke(inputs)
     # existed_qa.
-    return existed_qa,messages
+    return existed_qa, messages, failed_steps
+
+
+def fill_missing_questions(state: State):
+    planned_steps = state.get("planned_generator_steps", [])
+    produced = len(state.get("existed_qa", []))
+    planned_count = state.get("planned_question_count") or len(planned_steps)
+
+    pending_steps = state.get("pending_generator_steps", [])
+    if not pending_steps and planned_count and produced < planned_count:
+        pending_steps = planned_steps[produced:]
+
+    if not pending_steps:
+        return [], [], []
+
+    new_questions, new_messages, failed_steps = asyncio_generator(state, pending_steps)
+    return new_questions, new_messages, failed_steps
 
     
 RESPONSE_FORMAT = "{}的回复:\n\n<response>\n{}\n</response>\n\n*请执行下一步.*"
@@ -221,6 +239,8 @@ def main_supervisor(state: State) -> Command[Literal[*TEAM_MEMBERS, "__end__"]]:
             if message.name == "reporter":
                 reports.append(message.content)
             message.content = RESPONSE_FORMAT.format(message.name, message.content)
+    goto = "__end__"
+    next_step_content = ""
     for i in range(3):
         try:
             if len(messages)>119:
@@ -250,9 +270,25 @@ def main_supervisor(state: State) -> Command[Literal[*TEAM_MEMBERS, "__end__"]]:
     logger.info(f"Current state messages: {state['messages']}")
     logger.info(f"Supervisor response: {response_content}")
 
+    updates = {}
     if goto == "FINISH":
+        extra_questions, extra_messages, failed_steps = fill_missing_questions(state)
+        if extra_questions or extra_messages:
+            updates["existed_qa"] = state.get("existed_qa", []) + extra_questions
+            updates["messages"] = state["messages"] + extra_messages
+            updates["pending_generator_steps"] = failed_steps
+
+        planned_count = state.get("planned_question_count", 0)
+        produced_count = len(updates.get("existed_qa", state.get("existed_qa", [])))
+        if planned_count and produced_count < planned_count:
+            logger.warning(
+                "Planner target %s questions, generated %s; finishing early.",
+                planned_count,
+                produced_count,
+            )
+
         goto = "__end__"
-        
+
         with open(state['quiz_url'], "w", encoding="utf-8") as f:
             f.write(reports[-1])
         logger.info("Workflow completed")
@@ -272,7 +308,8 @@ def main_supervisor(state: State) -> Command[Literal[*TEAM_MEMBERS, "__end__"]]:
         updated_rag = {
             **state['rag']
         }
-    return Command(goto=goto, update={"next": goto, "next_work": next_step_content, "rag":updated_rag})
+    updates.update({"next": goto, "next_work": next_step_content, "rag":updated_rag})
+    return Command(goto=goto, update=updates)
 
 
 def main_browser_generator(state: State) -> Command[Literal["supervisor"]]:
