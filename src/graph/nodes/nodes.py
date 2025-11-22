@@ -215,6 +215,7 @@ def main_supervisor(state: State) -> Command[Literal[*TEAM_MEMBERS, "__end__"]]:
     # preprocess messages to make supervisor execute better.
     messages = deepcopy(messages)
     reports = []
+    response_content = ""
     for message in messages:
         if isinstance(message, BaseMessage) and message.name in TEAM_MEMBERS:
             if message.name == "reporter":
@@ -235,6 +236,7 @@ def main_supervisor(state: State) -> Command[Literal[*TEAM_MEMBERS, "__end__"]]:
                 ]
                 logger.info("使用hkust-deepseek-r1")
                 response = call_Hkust_api(prompt = "",messages = openai_format)
+                response_content = str(response)
                 parsed_response = get_json_result(response)
             else:
                 response = get_llm_by_type(supervisor_llm_type).invoke(messages).content
