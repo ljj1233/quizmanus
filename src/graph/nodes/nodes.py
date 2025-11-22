@@ -62,6 +62,16 @@ class QuizPlan:
         }
         return json.dumps(serializable, ensure_ascii=False, indent=2)
 
+
+def _summarize_fingerprint(fingerprint: Optional[Dict], fallback: str) -> str:
+    if not fingerprint:
+        return f"题目概述：{fallback[:100]}"
+
+    focus = str(fingerprint.get("focus", ""))[:80]
+    topic = fingerprint.get("topic", "")
+    question_type = fingerprint.get("question_type", "")
+    return f"题目指纹#{fingerprint.get('id', '?')}: {topic} | {focus} | 题型：{question_type}"
+
 def main_coordinator(state: State) -> Command[Literal["planner", "__end__"]]:
     """Coordinator node that communicate with customers."""
     logger.info("Coordinator talking.")
@@ -173,8 +183,12 @@ async def _generate_single(needi, state: State):
         else:
             rag_state = await asyncio.to_thread(state["rag_graph"].invoke, needi_state)
         qa_payload = rag_state["existed_qa"][-1]
+        fingerprint = rag_state.get("latest_fingerprint")
+        if not fingerprint:
+            history = rag_state.get("meta_history") or []
+            fingerprint = history[-1] if history else None
         message = HumanMessage(
-            content=f"题目内容已省略，概括内容为{next_step_content}",
+            content=_summarize_fingerprint(fingerprint, next_step_content),
             name=needi["agent_name"],
         )
         return qa_payload, message, None
@@ -236,7 +250,11 @@ def main_supervisor(state: State) -> Command[Literal[*TEAM_MEMBERS, "__end__"]]:
     """Supervisor node that decides which agent should act next."""
     logger.info("Supervisor evaluating next action")
     parser = JsonOutputParser()
-    trimmed_state = {**state, "messages": state.get("messages", [])[-10:]}
+    trimmed_state = {
+        **state,
+        "messages": state.get("messages", [])[-10:],
+        "meta_history": state.get("meta_history", [])[-20:],
+    }
     messages = apply_prompt_template("supervisor", trimmed_state)
     # preprocess messages to make supervisor execute better.
     messages = deepcopy(messages)
@@ -374,7 +392,11 @@ def main_rag(state: State) -> Command[Literal["supervisor"]]:
     logger.info("Browser agent starting task")
     rag_state = state['rag_graph'].invoke(state)
     new_qa = str(rag_state['existed_qa'][-1])
-    new_q = f"题目内容已省略，概括内容为{state['next_work']}"
+    fingerprint = rag_state.get("latest_fingerprint")
+    if not fingerprint:
+        history = rag_state.get("meta_history") or []
+        fingerprint = history[-1] if history else None
+    new_q = _summarize_fingerprint(fingerprint, state['next_work'])
     # if "参考答案" in new_qa:
     #     new_q = new_qa.split("参考答案")[0].strip()
     # elif "答案" in new_qa:
@@ -409,7 +431,11 @@ def main_rag_browser(state: State) -> Command[Literal["supervisor"]]:
     #     new_q = new_qa.split("答案")[0].strip()
     # else:
     #     new_q = new_qa
-    new_q = f"题目内容已省略，概括内容为{state['next_work']}"
+    fingerprint = rag_state.get("latest_fingerprint")
+    if not fingerprint:
+        history = rag_state.get("meta_history") or []
+        fingerprint = history[-1] if history else None
+    new_q = _summarize_fingerprint(fingerprint, state['next_work'])
     logger.info("RAG agent completed task")
     # 尝试修复可能的JSON输出
     # response_content = repair_json_output(response_content)
@@ -431,11 +457,17 @@ def main_rag_browser(state: State) -> Command[Literal["supervisor"]]:
 def main_reporter(state: State) -> Command[Literal["supervisor"]]:
     """Reporter node that write a final report."""
     logger.info("Reporter write final report")
+    meta_history = state.get("meta_history", [])
+    if meta_history:
+        summary_lines = [_summarize_fingerprint(meta, meta.get("topic", "")) for meta in meta_history]
+        payload = "\n".join(summary_lines)
+    else:
+        payload = '\n\n\n\n'.join(state.get('existed_qa', []))
     tmp_state = {
         "messages":[
             state['messages'][0],
             state['messages'][1],
-            HumanMessage(content = '\n\n\n\n'.join(state['existed_qa']))
+            HumanMessage(content = payload)
         ]
     }
     messages = apply_prompt_template("reporter", tmp_state)

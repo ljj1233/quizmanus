@@ -60,5 +60,7 @@ class State(MessagesState):
     generate_tokenizer: AutoTokenizer
     generate_model: Optional[Union[AutoModelForCausalLM, PeftModel]]
     quiz_url: str
+    meta_history: Annotated[List,add]
+    latest_fingerprint: dict
 
 
