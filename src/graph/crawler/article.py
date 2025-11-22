@@ -1,22 +1,29 @@
 import re
+from typing import Optional
 from urllib.parse import urljoin
 
 from markdownify import markdownify as md
 
 
 class Article:
-    url: str
+    """Lightweight container for crawled page content."""
 
-    def __init__(self, title: str, html_content: str):
+    def __init__(self, title: str, url: str = "", content: Optional[str] = None, html_content: Optional[str] = None):
+        if content is None and html_content is None:
+            raise ValueError("Either markdown content or html content must be provided.")
+
         self.title = title
-        self.html_content = html_content
+        self.url = url
+        self.raw_html = html_content
+        # Prefer explicit markdown content; otherwise convert provided HTML.
+        self.content = content if content is not None else md(html_content)
 
     def to_markdown(self, including_title: bool = True) -> str:
-        markdown = ""
+        markdown_parts = []
         if including_title:
-            markdown += f"# {self.title}\n\n"
-        markdown += md(self.html_content)
-        return markdown
+            markdown_parts.append(f"# {self.title}")
+        markdown_parts.append(self.content)
+        return "\n\n".join(markdown_parts).strip()
 
     def to_message(self) -> list[dict]:
         image_pattern = r"!\[.*?\]\((.*?)\)"

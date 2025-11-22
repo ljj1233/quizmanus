@@ -1,75 +1,46 @@
-import time
+from __future__ import annotations
+
 import json
 import os
+import random
 import re
-from typing import List, Dict, Union
-from tqdm import tqdm
+import string
+import threading
+from typing import Any, Dict, Iterable, List, Sequence, Tuple
 
-from langchain_openai import ChatOpenAI
 from langchain_ollama import ChatOllama
-
-
-import sys
-# sys.path.append("/hpc2hdd/home/fye374/ZWZ_Other/quizmanus/src")
-from src.utils import (
-    getData,
-    saveData,
-    get_absolute_file_paths,
-    get_json_result,
-    removeDuplicates,
-    call_Hkust_api
-)
-# from src.utils import call_Hkust_api,getData,get_json_result
-from src.config.rag import DETIALED_SUBJECTS
+from langchain_openai import ChatOpenAI
 from tqdm import tqdm
 
+from src.config.llms import (
+    eval_llm_type,
+    eval_model,
+    ollama_num_ctx,
+    openai_api_base,
+    openai_api_key,
+    openai_model,
+)
+from src.config.rag import DETIALED_SUBJECTS
+from src.utils import call_Hkust_api, getData, get_json_result, removeDuplicates, saveData
 
-from src.config.llms import eval_llm_type,eval_model,ollama_num_ctx
 
 def get_llm_by_type():
-    '''
-    # paramter:
-    type: "ollama","openai","qwen2.5-7b","qwen2.5-3b"
-    # usage:
-    from langchain_core.messages import HumanMessage, SystemMessage
-    llm = get_llm_by_type("ollama")
-    # 构建消息
-    messages = [
-        SystemMessage(content="你是一个物理学教授"),
-        HumanMessage(content="用简单的比喻解释量子隧穿效应")
-    ]
-    # 调用模型
-    response = llm.invoke(messages)
-    print("回答：", response.content)
-    '''
-    
     if eval_llm_type == "openai":
-        llm = ChatOpenAI(
+        return ChatOpenAI(
             model=openai_model,
-            api_key=openai_api_key,  # 替换为你的实际API密钥
-            base_url=openai_api_base,  # 默认是OpenAI官方，可改为自建服务地址
+            api_key=openai_api_key,
+            base_url=openai_api_base,
             temperature=0.7,
-            max_retries = 3
-            # max_tokens = 12280,
-            # max_completion_tokens = None
+            max_retries=3,
         )
-    elif eval_llm_type == "ollama":
-        # 初始化 Ollama（默认连接本地 http://localhost:11434）
-        # llm = ChatOllama(
-        #     model=ollama_model,  # 可替换为其他本地模型如 "mistral"、"qwen" 等
-        #     temperature=0.7,
-        #     # 如果 Ollama 服务地址不是默认的，可通过 base_url 修改：
-        #     # base_url="http://your-ollama-host:11434"
-        # )
-        
-        llm = ChatOllama(
+    if eval_llm_type == "ollama":
+        return ChatOllama(
             model=eval_model,
-            # match your previous options dict
-            num_ctx=ollama_num_ctx,       # context window size
-            temperature=0.7,     # randomness
-            stream=False         # synchronous invoke
+            num_ctx=ollama_num_ctx,
+            temperature=0.7,
+            stream=False,
         )
-    return llm
+    raise ValueError(f"Unsupported eval_llm_type: {eval_llm_type}")
 
 
 prompt_template = '''一位老师/学生提出了一个需求：{query}。因此我们创建了一套测验题，其中包含若干道题目。请利用你的自身知识以及给定的学科目录概括，根据以下标准对该测验题的质量进行评估，并为整套题目给出1到5分的评分。
@@ -166,65 +137,64 @@ prompt_template = '''一位老师/学生提出了一个需求：{query}。因此
 记住，输出不要包含```json和```
 '''
 
-import string
-import random
 random.seed(42)
-def generate_random_string(length=15):
-    # 定义字符集：小写字母 + 数字
+
+
+def generate_random_string(length: int = 15) -> str:
     characters = string.ascii_lowercase + string.digits
-    # 随机选择字符并拼接成字符串
-    random_string = ''.join(random.choice(characters) for _ in range(length))
-    return random_string
+    return "".join(random.choice(characters) for _ in range(length))
 
-def get_response(example,prompt_template):
 
-    try: 
-        eval_res_text = ""
-        eval_res = {}
-        catalog = DETIALED_SUBJECTS[example['catalog']]['desc_for_llm']
-        try:
-            aggregated_quiz_ = getData(example['quiz_url'])
-            aggregated_quiz = aggregated_quiz_.split("### 最终试卷")[-1]
-        except Exception as e:
-            print(f"evaluate error:{e}")
-        finally:
-            aggregated_quiz = getData(example['quiz_url'])
-        
-        query = example['query']
-        prompt = prompt_template.replace("{query}",query).replace("{aggregated_quiz}",aggregated_quiz).replace("{catalog}",catalog)
-        # print(get_json_result(call_Hkust_api(prompt,remain_reasoning= True, temperature = 0.0,top_p = 1.0)))
+def _load_quiz_content(quiz_path: str) -> str:
+    raw = getData(quiz_path)
+    if isinstance(raw, list):
+        return "\n".join(str(item) for item in raw)
+    return str(raw)
+
+
+def get_response(example: Dict[str, Any], prompt_template: str) -> Dict[str, Any]:
+    eval_res_text = ""
+    eval_res: Dict[str, Any] = {}
+    catalog = DETIALED_SUBJECTS[example["catalog"]]["desc_for_llm"]
+
+    try:
+        aggregated_quiz = _load_quiz_content(example["quiz_url"])
+        aggregated_quiz = aggregated_quiz.split("### 最终试卷")[-1]
+        query = example["query"]
+        prompt = (
+            prompt_template.replace("{query}", query)
+            .replace("{aggregated_quiz}", aggregated_quiz)
+            .replace("{catalog}", catalog)
+        )
+
         if eval_llm_type == "hkust":
-            eval_res_text_= call_Hkust_api(prompt,remain_reasoning= False, config = {"temperature":0,"top_k":1,"do_sample":False})
+            eval_res_text_ = call_Hkust_api(
+                prompt, remain_reasoning=False, config={"temperature": 0, "top_k": 1, "do_sample": False}
+            )
         else:
-            eval_res_text_ = get_llm_by_type().invoke([{"role":"user","content":prompt}]).content
-        eval_res_text = re.sub(r'<think>.*?</think>', '', eval_res_text_, flags=re.DOTALL).strip()
+            eval_res_text_ = get_llm_by_type().invoke([{"role": "user", "content": prompt}]).content
+
+        eval_res_text = re.sub(r"<think>.*?</think>", "", eval_res_text_, flags=re.DOTALL).strip()
         eval_res = get_json_result(eval_res_text)
         print(eval_res_text)
-        dict_ = {**example, "eval_res_text": eval_res_text, "eval_res": eval_res}
-        return dict_
-    except Exception as e:
-        print(e)
-        return  {**example, "eval_res_text": eval_res_text, "eval_res": eval_res}
+        return {**example, "eval_res_text": eval_res_text, "eval_res": eval_res}
+    except Exception as exc:
+        print(f"Evaluation failed for id={example.get('id')}: {exc}")
+        return {**example, "eval_res_text": eval_res_text, "eval_res": eval_res}
 
 
 
     
-import threading
-import os
-from tqdm import tqdm
-import json
-import copy
-
-
 def fromGPTQuestionGenerateIntentAndSaveEveryone(
-        data,
-        file_path,
-        prompt_template,
-        have_change_ids,
-        thread_count=0,
-        current_thread_num=0,
-        is_multi_thread=True,
-        bar=None):
+    data: Iterable[Dict[str, Any]],
+    file_path: str,
+    prompt_template: str,
+    have_change_ids: Sequence[str],
+    thread_count: int = 0,
+    current_thread_num: int = 0,
+    is_multi_thread: bool = True,
+    bar: tqdm | None = None,
+) -> None:
     if not bar:
         bar = tqdm(total=len(data))
     with open(file_path, "a", encoding="utf-8") as output_file:
@@ -235,7 +205,7 @@ def fromGPTQuestionGenerateIntentAndSaveEveryone(
                 if data_item['id'] in have_change_ids:
                     bar.update(1)  # 更新进度条
                     continue
-            response_dict = get_response(data_item,prompt_template)
+            response_dict = get_response(data_item, prompt_template)
             
             output_line = json.dumps(response_dict, ensure_ascii=False) + "\n"
             output_file.write(output_line)
@@ -246,17 +216,17 @@ def fromGPTQuestionGenerateIntentAndSaveEveryone(
 
 
 def multiThreadGenerateIntentAndSaveEveryone(
-        data,
-        file_path,
-        prompt_template,
-        have_change_ids,
-        is_multi_thread=True,
-        thread_count=None):
-    '''
-    '''
+    data: Iterable[Dict[str, Any]],
+    file_path: str,
+    prompt_template: str,
+    have_change_ids: Sequence[str],
+    is_multi_thread: bool = True,
+    thread_count: int | None = None,
+) -> None:
     if thread_count is None:
-        thread_count = os.cpu_count()  # 自动选择线程数
-        print("线程数",thread_count)
+        thread_count_env = os.getenv("EVAL_THREAD_COUNT")
+        thread_count = int(thread_count_env) if thread_count_env else os.cpu_count() or 1
+        print("线程数", thread_count)
 
     assert file_path.endswith(".jsonl"), "file_path must end with .jsonl"
     bar = tqdm(total=len(data))  # 创建一个进度条，总计data长度
@@ -267,15 +237,10 @@ def multiThreadGenerateIntentAndSaveEveryone(
     # 创建并启动thread_count个线程
     for i in range(thread_count):
         # 创建线程
-        thread = threading.Thread(target=fromGPTQuestionGenerateIntentAndSaveEveryone, args=(
-            data,
-            file_path,
-            prompt_template,
-            have_change_ids,
-            thread_count,
-            i,
-            is_multi_thread,
-            bar))
+        thread = threading.Thread(
+            target=fromGPTQuestionGenerateIntentAndSaveEveryone,
+            args=(data, file_path, prompt_template, have_change_ids, thread_count, i, is_multi_thread, bar),
+        )
         threads.append(thread)
         # 启动线程
         thread.start()
@@ -288,45 +253,29 @@ def multiThreadGenerateIntentAndSaveEveryone(
     print("All threads have finished.")
 
 
-def evaluate_quiz(data,path):
-    # path = "/hpc2hdd/home/fye374/ZWZ_Other/quizmanus/dataset/sft/gaokao/data/规范data/train.jsonl"
-    import re
-    have_change_ids = []
-    not_change_ids = []
-    while_i = 0
-    while(len(data)!= len(have_change_ids) and while_i < 5):
-        while_i+=1
+def evaluate_quiz(data: List[Dict[str, Any]], path: str) -> None:
+    have_change_ids: List[str] = []
+    attempts = 0
+    while len(data) != len(have_change_ids) and attempts < 5:
+        attempts += 1
         have_change_ids = []
         if os.path.exists(path):
-            saveData(
-                removeDuplicates(
-                    getData(path)),
-                path
-            )
+            saveData(removeDuplicates(getData(path)), path)
             generated_data = getData(path)
             for item in generated_data:
-                if 'eval_res' in item and 'eval_res_text' in item and len(item['eval_res_text'])!=0 and len(item['eval_res'])!=0:
-                    have_change_ids.append(item['id'])
-            not_change_ids = list(set([item['id'] for item in data])-set(have_change_ids))
-        print(len(data))# train_data是list[dict]
+                if item.get("eval_res_text") and item.get("eval_res"):
+                    have_change_ids.append(item["id"])
+        print(len(data))  # train_data是list[dict]
         print(len(have_change_ids))
         multiThreadGenerateIntentAndSaveEveryone(
             data,
             path,
             prompt_template,
             have_change_ids,
-            thread_count= 20,
-            # thread_count= 1,
+            thread_count=20,
         )
-        saveData(
-            removeDuplicates(
-                getData(path)),
-            path
-        )
-        saveData(
-            getData(path),
-            path[:-1]
-        )
+        saveData(removeDuplicates(getData(path)), path)
+        saveData(getData(path), path[:-1])
 
 # real_data = [item for item in train_data if item['modify_content'].strip()!=""]
 # process(real_data,path = f"/hpc2hdd/home/fye374/ZWZ_Other/quizmanus/dataset/课本md/高中/md/合并/3.伪问答对（{q_type}）.jsonl")

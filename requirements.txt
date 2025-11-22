@@ -31,7 +31,11 @@ numpy
 pandas
 tqdm
 
+# Crawling
+trafilatura>=1.6.0
+
 # Tools & Utilities
-jina>=3.0.0
+trafilatura
 requests
 aiohttp
+curl_cffi
