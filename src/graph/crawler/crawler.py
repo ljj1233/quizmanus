@@ -1,8 +1,8 @@
 import sys
 
 from .article import Article
-from .jina_client import JinaClient
 from .readability_extractor import ReadabilityExtractor
+from .trafilatura_client import TrafilaturaClient
 
 
 class Crawler:
@@ -12,13 +12,11 @@ class Crawler:
         # them into text and image blocks for one single and unified
         # LLM message.
         #
-        # Jina is not the best crawler on readability, however it's
-        # much easier and free to use.
-        #
-        # Instead of using Jina's own markdown converter, we'll use
-        # our own solution to get better readability results.
-        jina_client = JinaClient()
-        html = jina_client.crawl(url, return_format="html")
+        # To avoid rate limits and external dependencies, use a local
+        # Trafilatura fetch to pull the raw HTML before applying our
+        # own readability extraction pipeline.
+        trafilatura_client = TrafilaturaClient()
+        html = trafilatura_client.crawl(url)
         extractor = ReadabilityExtractor()
         article = extractor.extract_article(html)
         article.url = url
