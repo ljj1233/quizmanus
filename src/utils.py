@@ -32,6 +32,8 @@ def getData(path:str)->list:
         # 使用 pathlib 处理路径
         md_file = Path(path)
         data = md_file.read_text(encoding='utf-8')
+    else:
+        raise ValueError("Unsupported file type: %s" % path)
     return data
 
 def saveData(data:list, path:str)->None:
