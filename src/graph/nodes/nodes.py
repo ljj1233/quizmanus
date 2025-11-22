@@ -289,9 +289,18 @@ def main_supervisor(state: State) -> Command[Literal[*TEAM_MEMBERS, "__end__"]]:
             )
 
         goto = "__end__"
-
-        with open(state['quiz_url'], "w", encoding="utf-8") as f:
-            f.write(reports[-1])
+        report_content = reports[-1] if reports else ""
+        if not report_content and state.get("messages"):
+            last_message = state["messages"][-1]
+            if isinstance(last_message, dict):
+                report_content = last_message.get("content", "")
+            else:
+                report_content = getattr(last_message, "content", "")
+        if report_content:
+            with open(state['quiz_url'], "w", encoding="utf-8") as f:
+                f.write(report_content)
+        else:
+            logger.warning("No reporter output available; skipping report write for %s", state.get("quiz_url"))
         logger.info("Workflow completed")
     else:
         logger.info(f"Supervisor delegating to: {goto}")

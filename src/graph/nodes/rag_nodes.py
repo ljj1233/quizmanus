@@ -171,7 +171,7 @@ def rag_reranker(state: State):
         reranker = state["rag"]['reranker_model'],
         topk = 1)
     updated_rag = {
-        **state['rag'], 
+        **state['rag'],
         "reranked_docs": reranked_docs,
         'outer_knowledge':""
     }
@@ -179,7 +179,8 @@ def rag_reranker(state: State):
         ##
 
         # for i in range(3):
-        try: 
+        response_content = ""
+        try:
             message_state = {
                 "messages":[
                     HumanMessage(content=f'''课本知识：{''.join(reranked_docs)}''')
@@ -190,14 +191,14 @@ def rag_reranker(state: State):
             response_content = result["messages"][-1].content
             outer_knowledge = get_json_result(response_content)['课外知识']
             updated_rag = {
-                **updated_rag, 
+                **updated_rag,
                 "outer_knowledge": outer_knowledge
             }
         except Exception as e:
             logger.error(f"Browser agent failed with error: {e}\n===============\n{response_content}\n==============")
             outer_knowledge = response_content
             updated_rag = {
-                **updated_rag, 
+                **updated_rag,
                 "outer_knowledge": outer_knowledge
             }
         logger.info(f"Browser agent response: {outer_knowledge}")
