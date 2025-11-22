@@ -47,27 +47,27 @@ def rag_hyde(state: State):
         HumanMessage(content=f'''当前查询：{state["next_work"]}''')
     ]
     
-    # for i in range(3):
-    # 4. 调用模型（假设 ollama.generate 返回原始文本）
-    rewrite_res = re.sub(r'<think>.*?</think>', '', get_llm_by_type(type = llm_type).invoke(messages).content, flags=re.DOTALL).strip()
-    # 5. 用 JsonOutputParser 解析结果
-    try:
-        parsed_output = parser.parse(rewrite_res)
-        logger.info(f"hyde: {parsed_output}")
-        updated_rag = {
-            **state['rag'],
-            "hyde_query": parsed_output["hyde_query"]
-        }
-        return Command(
-            update = {
-                "rag":updated_rag
-                
-            },
-            goto = "router"
-        )
-    except Exception as e:
-        # 如果解析失败，返回原始查询或抛出错误
-        logger.warning(f"第{i+1}次尝试：res: {rewrite_res} error: {e}")
+    for attempt in range(3):
+        # 4. 调用模型（假设 ollama.generate 返回原始文本）
+        rewrite_res = re.sub(r'<think>.*?</think>', '', get_llm_by_type(type = llm_type).invoke(messages).content, flags=re.DOTALL).strip()
+        # 5. 用 JsonOutputParser 解析结果
+        try:
+            parsed_output = parser.parse(rewrite_res)
+            logger.info(f"hyde: {parsed_output}")
+            updated_rag = {
+                **state['rag'],
+                "hyde_query": parsed_output["hyde_query"]
+            }
+            return Command(
+                update = {
+                    "rag":updated_rag
+
+                },
+                goto = "router"
+            )
+        except Exception as e:
+            # 如果解析失败，返回原始查询或抛出错误
+            logger.warning(f"HyDE parse attempt {attempt + 1} failed: res: {rewrite_res} error: {e}")
     
     return Command(
         goto = "__end__"
