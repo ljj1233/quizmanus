@@ -95,7 +95,7 @@ def test_fill_missing_questions_generates_from_planned_steps(monkeypatch):
 
 
 def test_main_supervisor_writes_fallback_when_no_report(monkeypatch, tmp_path):
-    dummy_llm = DummyLLM(['{"next": "FINISH", "next_step_content": ""}'])
+    dummy_llm = DummyLLM(['{"next_action": "FINISH", "missing_points": [], "instruction": ""}'])
     monkeypatch.setattr(nodes, "get_llm_by_type", lambda *_args, **_kwargs: dummy_llm)
     monkeypatch.setattr(nodes, "fill_missing_questions", lambda _state: ([], [], []))
     monkeypatch.setattr(
@@ -118,6 +118,86 @@ def test_main_supervisor_writes_fallback_when_no_report(monkeypatch, tmp_path):
     assert command.goto == "__end__"
     assert quiz_file.exists()
     assert quiz_file.read_text() == "fallback report"
+
+
+def test_supervisor_retries_with_default_schema(monkeypatch):
+    dummy_llm = DummyLLM([
+        '{"next": "rag_er"}',
+        '{"next_action": "rag_er", "missing_points": [], "instruction": "handle it"}',
+    ])
+    monkeypatch.setattr(nodes, "get_llm_by_type", lambda *_args, **_kwargs: dummy_llm)
+    monkeypatch.setattr(nodes, "fill_missing_questions", lambda _state: ([], [], []))
+    monkeypatch.setattr(
+        nodes,
+        "apply_prompt_template",
+        lambda *_args, **_kwargs: [HumanMessage(content="summary", name="planner")],
+    )
+
+    state = {
+        "messages": [HumanMessage(content="existing", name="planner")],
+        "rag": {},
+        "quiz_url": "unused",
+        "existed_qa": [],
+        "pending_generator_steps": [],
+    }
+
+    command = nodes.main_supervisor(state)
+
+    assert command.goto == "rag_er"
+    assert command.update["next_work"] == "handle it"
+
+
+def test_supervisor_blocks_finish_when_count_missing(monkeypatch):
+    dummy_llm = DummyLLM(['{"next_action": "FINISH", "missing_points": [], "instruction": ""}'])
+    monkeypatch.setattr(nodes, "get_llm_by_type", lambda *_args, **_kwargs: dummy_llm)
+    monkeypatch.setattr(nodes, "fill_missing_questions", lambda _state: ([], [], []))
+    monkeypatch.setattr(
+        nodes,
+        "apply_prompt_template",
+        lambda *_args, **_kwargs: [HumanMessage(content="summary", name="planner")],
+    )
+
+    pending_step = {"agent_name": "rag_er", "description": "generate"}
+    state = {
+        "messages": [HumanMessage(content="existing", name="planner")],
+        "rag": {},
+        "quiz_url": "unused",
+        "existed_qa": ["one"],
+        "pending_generator_steps": [pending_step],
+        "planned_question_count": 2,
+    }
+
+    command = nodes.main_supervisor(state)
+
+    assert command.goto == "rag_er"
+    assert "generate" in command.update["next_work"]
+
+
+def test_supervisor_blocks_finish_when_knowledge_missing(monkeypatch):
+    dummy_llm = DummyLLM(['{"next_action": "FINISH", "missing_points": [], "instruction": ""}'])
+    monkeypatch.setattr(nodes, "get_llm_by_type", lambda *_args, **_kwargs: dummy_llm)
+    monkeypatch.setattr(nodes, "fill_missing_questions", lambda _state: ([], [], []))
+    monkeypatch.setattr(
+        nodes,
+        "apply_prompt_template",
+        lambda *_args, **_kwargs: [HumanMessage(content="summary", name="planner")],
+    )
+
+    state = {
+        "messages": [HumanMessage(content="existing", name="planner")],
+        "rag": {},
+        "quiz_url": "unused",
+        "existed_qa": ["one"],
+        "pending_generator_steps": [],
+        "planned_question_count": 1,
+        "required_knowledge_points": ["点A", "点B"],
+        "covered_knowledge_points": ["点A"],
+    }
+
+    command = nodes.main_supervisor(state)
+
+    assert command.goto == "rag_er"
+    assert "点B" in command.update["next_work"]
 
 
 def test_rag_reranker_survives_browser_failure(monkeypatch):

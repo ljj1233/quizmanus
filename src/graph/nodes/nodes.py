@@ -1,10 +1,11 @@
 import asyncio
 from dataclasses import dataclass, field
 from typing import List, Dict, TypedDict, Literal, Optional
+from pydantic import BaseModel, Field, ValidationError
 from langgraph.graph import StateGraph, END
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnableLambda
-from langchain_core.output_parsers import JsonOutputParser
+from langchain_core.output_parsers import JsonOutputParser, PydanticOutputParser
 from langchain_core.messages import HumanMessage, SystemMessage, BaseMessage,messages_to_dict
 from .quiz_types import State
 from langgraph.types import Command
@@ -61,6 +62,26 @@ class QuizPlan:
             "steps": [step.__dict__ for step in self.steps],
         }
         return json.dumps(serializable, ensure_ascii=False, indent=2)
+
+
+class SupervisorDecisionDict(TypedDict):
+    next_action: str
+    missing_points: List[str]
+    instruction: str
+
+
+class SupervisorDecision(BaseModel):
+    next_action: str = Field(..., alias="next_action")
+    missing_points: List[str] = Field(default_factory=list)
+    instruction: str = ""
+
+    class Config:
+        populate_by_name = True
+        extra = "ignore"
+
+
+DEFAULT_SUPERVISOR_DECISION = SupervisorDecision(next_action="planner")
+
 
 def main_coordinator(state: State) -> Command[Literal["planner", "__end__"]]:
     """Coordinator node that communicate with customers."""
@@ -215,6 +236,64 @@ def run_generator_concurrently(state: State, need_to_generate: List):
     return existed_qa, messages, failed_steps
 
 
+def _clean_supervisor_response(raw_response: str) -> str:
+    cleaned = re.sub(r'<think>.*?</think>', '', raw_response, flags=re.DOTALL).strip()
+    if cleaned.startswith("```json"):
+        cleaned = cleaned.removeprefix("```json")
+    if cleaned.startswith("```"):
+        cleaned = cleaned.removeprefix("```")
+    if cleaned.endswith("```"):
+        cleaned = cleaned.removesuffix("```")
+    return cleaned.strip()
+
+
+def _parse_supervisor_decision(
+    response_content: str, parser: PydanticOutputParser
+) -> SupervisorDecision:
+    cleaned = _clean_supervisor_response(response_content)
+    parsed = parser.parse(cleaned)
+    if not getattr(parsed, "next_action", None) or getattr(parsed, "next_action") is Ellipsis:
+        raise ValidationError("missing next_action")
+    if not hasattr(parsed, "missing_points") or parsed.missing_points is Ellipsis:
+        parsed.missing_points = []
+    if not hasattr(parsed, "instruction") or parsed.instruction is Ellipsis:
+        parsed.instruction = ""
+    return parsed
+
+
+def _merge_missing_points(state: State, decision_missing: List[str]) -> List[str]:
+    required_points = state.get("required_knowledge_points") or []
+    covered_points = set(state.get("covered_knowledge_points") or [])
+    remaining_required = [p for p in required_points if p not in covered_points]
+    combined: List[str] = []
+    for point in [*decision_missing, *remaining_required]:
+        if point and point not in combined:
+            combined.append(point)
+    return combined
+
+
+def _build_next_work(
+    instruction: str, missing_points: List[str], pending_step: Optional[Dict] = None
+) -> str:
+    parts: List[str] = []
+    if pending_step:
+        parts.append(pending_step.get("description", ""))
+        note = pending_step.get("note") or ""
+        if note.strip():
+            parts.append(f"note:{note}")
+    if instruction:
+        parts.append(instruction)
+    if missing_points:
+        parts.append(f"请优先覆盖以下缺失的知识点：{', '.join(missing_points)}")
+    return "\n".join([part for part in parts if part])
+
+
+def _choose_generator_target(pending_steps: List[Dict]) -> Dict:
+    if pending_steps:
+        return pending_steps[0]
+    return {"agent_name": "rag_er", "description": "补充生成一道覆盖缺失知识点的题目"}
+
+
 def fill_missing_questions(state: State):
     planned_steps = state.get("planned_generator_steps", [])
     produced = len(state.get("existed_qa", []))
@@ -235,7 +314,7 @@ RESPONSE_FORMAT = "{}的回复:\n\n<response>\n{}\n</response>\n\n*请执行下�
 def main_supervisor(state: State) -> Command[Literal[*TEAM_MEMBERS, "__end__"]]:
     """Supervisor node that decides which agent should act next."""
     logger.info("Supervisor evaluating next action")
-    parser = JsonOutputParser()
+    parser = PydanticOutputParser(pydantic_object=SupervisorDecision)
     trimmed_state = {**state, "messages": state.get("messages", [])[-10:]}
     messages = apply_prompt_template("supervisor", trimmed_state)
     # preprocess messages to make supervisor execute better.
@@ -249,6 +328,8 @@ def main_supervisor(state: State) -> Command[Literal[*TEAM_MEMBERS, "__end__"]]:
             message.content = RESPONSE_FORMAT.format(message.name, message.content)
     goto = "__end__"
     next_step_content = ""
+    missing_points: List[str] = []
+    decision: Optional[SupervisorDecision] = None
     for i in range(3):
         try:
             if len(messages)>119:
@@ -264,19 +345,26 @@ def main_supervisor(state: State) -> Command[Literal[*TEAM_MEMBERS, "__end__"]]:
                 ]
                 logger.info("使用hkust-deepseek-r1")
                 response = call_Hkust_api(prompt = "",messages = openai_format)
-                response_content = str(response)
-                parsed_response = get_json_result(response)
+                response_content = json.dumps(response, ensure_ascii=False) if isinstance(response, dict) else str(response)
             else:
                 response = get_llm_by_type(supervisor_llm_type).invoke(messages).content
-                response_content = re.sub(r'<think>.*?</think>', '', response, flags=re.DOTALL).strip()
-                parsed_response = get_json_result(response_content)
-            goto = parsed_response["next"]
-            next_step_content = parsed_response["next_step_content"]
+                response_content = _clean_supervisor_response(response)
+            decision = _parse_supervisor_decision(response_content, parser)
+            goto = decision.next_action
+            next_step_content = decision.instruction
+            missing_points = decision.missing_points
             break
-        except Exception as e:
+        except (ValidationError, Exception) as e:
             logger.warning(f"supervisor出错了：{e}")
+            decision = None
     logger.info(f"Current state messages: {state['messages']}")
     logger.info(f"Supervisor response: {response_content}")
+
+    if decision is None:
+        decision = DEFAULT_SUPERVISOR_DECISION
+        goto = decision.next_action
+        next_step_content = decision.instruction
+        missing_points = decision.missing_points
 
     updates = {}
     if goto == "FINISH":
@@ -289,25 +377,24 @@ def main_supervisor(state: State) -> Command[Literal[*TEAM_MEMBERS, "__end__"]]:
         planned_count = state.get("planned_question_count", 0)
         produced_count = len(updates.get("existed_qa", state.get("existed_qa", [])))
         pending_steps = updates.get("pending_generator_steps") or state.get("pending_generator_steps", [])
+        merged_missing = _merge_missing_points(state, missing_points)
 
-        if planned_count and produced_count < planned_count and pending_steps:
-            logger.info(
-                "Not enough questions generated (have %s / target %s); routing to generator.",
-                produced_count,
-                planned_count,
-            )
-            next_pending = pending_steps[0]
+        needs_more_questions = bool(planned_count and produced_count < planned_count)
+        has_missing_points = bool(merged_missing)
+
+        if needs_more_questions or has_missing_points:
+            if needs_more_questions:
+                logger.info(
+                    "Not enough questions generated (have %s / target %s); routing to generator.",
+                    produced_count,
+                    planned_count,
+                )
+            if has_missing_points:
+                logger.info("Missing required knowledge points: %s", merged_missing)
+            next_pending = _choose_generator_target(pending_steps)
             goto = next_pending["agent_name"]
-            updates.update(
-                {
-                    "next": goto,
-                    "next_work": next_pending.get("description", ""),
-                    "rag": {
-                        **state["rag"],
-                        "enable_browser": next_pending["agent_name"] == "rag_and_browser",
-                    },
-                }
-            )
+            next_step_content = _build_next_work(next_step_content, merged_missing, next_pending)
+            missing_points = merged_missing
         else:
             goto = "__end__"
             report_content = reports[-1] if reports else ""
@@ -339,6 +426,9 @@ def main_supervisor(state: State) -> Command[Literal[*TEAM_MEMBERS, "__end__"]]:
         updated_rag = {
             **state['rag']
         }
+    if missing_points:
+        updates["missing_points"] = missing_points
+
     updates.update({"next": goto, "next_work": next_step_content, "rag":updated_rag})
     return Command(goto=goto, update=updates)
 
