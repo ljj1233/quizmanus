@@ -1,4 +1,4 @@
-from typing import List, Dict, TypedDict, Literal
+from typing import List, Dict, TypedDict, Literal, Tuple
 from langgraph.graph import StateGraph, END
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnableLambda
@@ -27,8 +27,56 @@ from ...config.nodes import QUESTION_TYPES
 from ...utils import get_json_result
 import logging
 
+FINGERPRINT_FOCUS_LIMIT = 120
+
 logger = logging.getLogger(__name__)
 # logger.setLevel(logging.DEBUG)
+
+
+def _parse_next_work(next_work: str) -> Tuple[str, str]:
+    topic = ""
+    focus = ""
+    for line in next_work.splitlines():
+        lowered = line.lower()
+        if lowered.startswith("title:"):
+            topic = line.split(":", 1)[-1].strip()
+        elif lowered.startswith("description:"):
+            focus = line.split(":", 1)[-1].strip()
+        elif lowered.startswith("note:") and not focus:
+            focus = line.split(":", 1)[-1].strip()
+    if not topic:
+        topic = next_work[:50]
+    if not focus:
+        focus = next_work[:FINGERPRINT_FOCUS_LIMIT]
+    return topic, focus
+
+
+def extract_question_fingerprint(state: State, final_answer: str) -> Tuple[Dict, bool]:
+    """Generate a lightweight fingerprint for a generated question.
+
+    Returns a tuple of (fingerprint, is_duplicate) to avoid duplicating entries.
+    """
+
+    existing_meta = state.get("meta_history", []) or []
+    topic, focus = _parse_next_work(state.get("next_work", ""))
+
+    if not focus:
+        focus = final_answer.split("\n", 1)[0].strip()
+
+    focus = focus[:FINGERPRINT_FOCUS_LIMIT]
+
+    candidate = {
+        "id": len(existing_meta) + 1,
+        "topic": topic,
+        "focus": focus,
+        "question_type": state.get("rag", {}).get("type", ""),
+    }
+
+    for meta in existing_meta:
+        if meta.get("topic") == topic and meta.get("focus") == focus:
+            return meta, True
+
+    return candidate, False
 def rag_hyde(state: State):
     # 1. 定义 JSON 输出解析器
     parser = JsonOutputParser()
@@ -272,14 +320,17 @@ def rag_generator(state: State):
         # response = get_llm_by_type(type = generator_model).invoke(messages_langchain_format)
         final_answer = re.sub(r'<think>.*?</think>', '', get_llm_by_type(type = generator_model).invoke(messages).content, flags=re.DOTALL).strip()
         
-    # parsed_output = parser.parse(final_answer)
+    fingerprint, is_duplicate = extract_question_fingerprint(state, final_answer)
+    meta_update = [] if is_duplicate else [fingerprint]
     logger.info(f"final_answer: {final_answer}")
-    # return parsed_output
+    logger.info(f"fingerprint: {fingerprint}")
     return Command(
         update = {
             "existed_qa": [
                 final_answer
-            ]
+            ],
+            "meta_history": meta_update,
+            "latest_fingerprint": fingerprint,
         },
         goto = "__end__"
     )

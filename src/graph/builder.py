@@ -10,6 +10,7 @@ from .nodes.nodes import (
     main_coordinator,
     main_supervisor,
     main_planner,
+    main_critic,
     main_browser_generator,
     main_reporter,
     main_rag,
@@ -27,6 +28,7 @@ def build_main():
     builder.add_node("reporter", main_reporter)
     builder.add_node("rag_er", main_rag)
     builder.add_node("rag_and_browser", main_rag_browser)
+    builder.add_node("critic", main_critic)
     return builder.compile()
 
 def build_rag():
