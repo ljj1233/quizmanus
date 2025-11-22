@@ -1,0 +1,87 @@
+# --- Python 通用 ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# --- 虚拟环境 (Virtual Environments) ---
+# 匹配常见的虚拟环境文件夹名
+venv/
+.venv/
+env/
+.env
+ENV/
+env.bak/
+venv.bak/
+# 你提到的 qgg 环境如果是本地目录也应该加进去，如果是 conda 全局环境则不需要
+
+# --- 环境变量与密钥 (Environment Variables) ---
+# 这一点至关重要，防止 API Key 泄露
+.env
+.env.local
+.env.*.local
+# 但要保留示例文件
+!.env-example
+!.env.example
+
+# --- IDE / 编辑器配置 ---
+.vscode/
+.idea/
+.run/
+*.swp
+*.swo
+*~
+
+# --- Jupyter Notebooks ---
+.ipynb_checkpoints
+*/.ipynb_checkpoints/*
+# 如果不想上传执行结果的大型 ipynb，可以使用 git filter，但在 ignore 里通常只忽略 checkpoints
+
+# --- 项目特定数据与产物 (Project Specific) ---
+# 1. 向量数据库与本地数据库文件 (防止上传二进制大文件)
+*.db
+*.sqlite3
+*.chroma
+src/RAG/vector_store/
+
+# 2. 模型权重文件 (通常体积巨大，不应入库)
+models/
+*.pth
+*.bin
+*.gguf
+*.safetensors
+# 如果你把微调后的模型保存在本地，也要忽略
+src/SFT/纯微调/results/
+
+# 3. 上传的临时文件与处理结果
+uploads/
+temp/
+tmp/
+*.log
+logs/
+
+# 4. 爬虫或 MinerU 生成的临时数据
+src/RAG/数据处理/images/
+*_ocr.pdf
+
+# --- 操作系统生成文件 ---
+.DS_Store
+Thumbs.db
