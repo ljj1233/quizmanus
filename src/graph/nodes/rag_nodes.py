@@ -112,13 +112,10 @@ def rag_router(state: State):
         # 6. 验证结果是否在可用知识库中
         # valid_sources = {t["name"] for t in VECTORSTORES}
         if result["subject"] not in SUBJECTS:
-            logger.warning(f"第{i+1}次尝试：选择的知识库不存在: {result['subject']}")
-            # return Command(
-            #     goto = "__end__"
-            # )
-            
-        logger.info(f"router: {result["subject"]}")
-        logger.info(f"type: {result["question_type"]}")
+            logger.warning(f"选择的知识库不存在: {result['subject']}")
+
+        logger.info("router: %s", result["subject"])
+        logger.info("type: %s", result["question_type"])
         updated_rag = {
             **state['rag'],
             "subject": result["subject"],

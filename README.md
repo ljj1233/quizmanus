@@ -33,3 +33,15 @@
 1. 不止步于基于本低知识库的试卷生成系统，而是支持用户实时上传pdf，实时根据给定pdf生成题目、试卷。
 2. 加入问答系统，给用户解答问题。
 3. 目前仅仅支持纯文本且题目token量没那么大的生物、地理、历史、政治，未来可以加上语文、英语、数学等。
+
+## 新增：实时上传 PDF 并入库
+- 在 FastAPI 服务中新增了 `/upload_pdf` 接口，可上传 `pdf/md/txt` 文件并自动写入 Milvus。PDF 会先通过 MinerU 解析为 Markdown，随后使用 BGEM3 生成稠密/稀疏向量并落入指定集合。
+- 环境变量：
+  - `UPLOAD_DIR`：上传文件及 MinerU 输出的存储目录，默认 `/tmp/quizmanus/uploads`。
+  - `MILVUS_URI`：Milvus 连接地址，默认 `http://localhost:19530`。
+  - `BGE_MODEL_PATH`：BGEM3 模型名称或本地路径，默认 `BAAI/bge-m3`。
+  - `EMBEDDING_DEVICE`：嵌入设备（如 `cuda:0` 或 `cpu`）。
+- 调用示例（使用 `curl`）：
+  ```bash
+  curl -F "file=@/path/to/book.pdf" "http://localhost:18001/upload_pdf?collection_name=my_pdf"
+  ```

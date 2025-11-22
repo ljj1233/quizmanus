@@ -6,7 +6,7 @@ os.environ['VLLM_USE_FLASHINFER_SAMPLER'] = '1'
 import sys
 sys.path.append("/hpc2hdd/home/fye374/ZWZ_Other/quizmanus")
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from vllm import LLM, SamplingParams
 from src.graph.builder import build_rag,build_main
 from langgraph.graph import MessagesState
@@ -28,14 +28,25 @@ import torch
 from transformers import AutoTokenizer
 from milvus_model.hybrid import BGEM3EmbeddingFunction
 from pymilvus.model.reranker import BGERerankFunction
-from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
+from pathlib import Path
+
+from src.RAG.pdf_ingestion import (
+    ingest_markdown_into_milvus,
+    parse_pdf_with_mineru,
+)
 
 app = FastAPI()
 model: LLM = None
 embeddings: BGEM3EmbeddingFunction = None
 reranker: BGERerankFunction = None
+
+UPLOAD_ROOT = Path(os.getenv("UPLOAD_DIR", "/tmp/quizmanus/uploads"))
+UPLOAD_ROOT.mkdir(parents=True, exist_ok=True)
+MILVUS_URI = os.getenv("MILVUS_URI", "http://localhost:19530")
+BGE_MODEL_NAME = os.getenv("BGE_MODEL_PATH", "BAAI/bge-m3")
+EMBEDDING_DEVICE = os.getenv("EMBEDDING_DEVICE", "cpu")
 
 
 # --- Pydantic 模型定义 ---
@@ -58,6 +69,13 @@ class RerankRequest(BaseModel):
 class RerankResponse(BaseModel):
     reranked_documents: List[str] = Field(description="重排后的文档列表，按得分降序排列。")
     model_name: str = Field(description="所使用的重排模型名称。")
+
+
+class UploadResponse(BaseModel):
+    collection_name: str = Field(description="存储向量的 Milvus 集合名称。")
+    markdown_path: str = Field(description="MinerU 生成的 Markdown 文件路径。")
+    inserted_chunks: int = Field(description="写入 Milvus 的文本块数量。")
+    message: str = Field(description="处理结果说明。")
 
 
 @app.on_event("startup")
@@ -116,6 +134,56 @@ async def generate(req: Request):
     gen = model.generate(body["prompts"], vllm_sampling_params)
     result = [geni.outputs[0].text.split("assistant")[-1].strip() for geni in gen]
     return result
+
+
+async def _save_upload_file(upload_file: UploadFile, destination: Path) -> Path:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with destination.open("wb") as buffer:
+        while True:
+            chunk = await upload_file.read(1024 * 1024)
+            if not chunk:
+                break
+            buffer.write(chunk)
+    await upload_file.close()
+    return destination
+
+
+@app.post("/upload_pdf", response_model=UploadResponse)
+async def upload_pdf(
+    file: UploadFile = File(...),
+    collection_name: str = "user_uploads",
+    keep_images: bool = False,
+):
+    suffix = Path(file.filename).suffix.lower()
+    saved_path = UPLOAD_ROOT / file.filename
+    await _save_upload_file(file, saved_path)
+
+    try:
+        if suffix == ".pdf":
+            markdown_path = parse_pdf_with_mineru(saved_path, UPLOAD_ROOT, keep_images=keep_images)
+        elif suffix in {".md", ".markdown", ".txt"}:
+            markdown_path = saved_path
+        else:
+            raise HTTPException(status_code=400, detail="仅支持上传 pdf、md、markdown 或 txt 文件。")
+
+        inserted_chunks = ingest_markdown_into_milvus(
+            markdown_path=markdown_path,
+            db_uri=MILVUS_URI,
+            collection_name=collection_name,
+            embedding_model_name=BGE_MODEL_NAME,
+            embedding_device=EMBEDDING_DEVICE,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"上传处理失败: {exc}")
+
+    return UploadResponse(
+        collection_name=collection_name,
+        markdown_path=str(markdown_path),
+        inserted_chunks=inserted_chunks,
+        message="上传并入库成功。",
+    )
 
 
 # @app.post("/embed", response_model=EmbedResponse)
