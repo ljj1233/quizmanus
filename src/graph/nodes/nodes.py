@@ -257,7 +257,6 @@ def main_supervisor(state: State) -> Command[Literal[*TEAM_MEMBERS, "__end__"]]:
                 logger.info("使用hkust-deepseek-r1")
                 response = call_Hkust_api(prompt = "",messages = openai_format)
                 response_content = str(response)
-
                 parsed_response = get_json_result(response)
             else:
                 response = get_llm_by_type(supervisor_llm_type).invoke(messages).content
