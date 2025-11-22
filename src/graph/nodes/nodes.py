@@ -1,4 +1,6 @@
-from typing import List, Dict, TypedDict, Literal
+import asyncio
+from dataclasses import dataclass, field
+from typing import List, Dict, TypedDict, Literal, Optional
 from langgraph.graph import StateGraph, END
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnableLambda
@@ -15,9 +17,7 @@ from ...config.llms import llm_type,generator_model,reporter_llm_type,planner_ll
 from copy import deepcopy
 import json
 import logging
-import json_repair
 from ...utils import get_json_result,call_Hkust_api
-from ...config.llms import llm_type
 from ...config.rag import SUBJECTS
 import re
 # Configure logging
@@ -27,7 +27,40 @@ import re
 # )
 
 logger = logging.getLogger(__name__)
-# logger.setLevel(logging.DEBUG)
+
+
+@dataclass
+class PlanStep:
+    agent_name: Literal["rag_er", "rag_and_browser"]
+    title: str
+    description: str
+    note: str = ""
+    subject: Optional[str] = None
+    question_type: Optional[str] = None
+
+
+@dataclass
+class QuizPlan:
+    subject: str
+    steps: List[PlanStep] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, data: Dict) -> "QuizPlan":
+        if data.get("subject") not in SUBJECTS:
+            raise ValueError("Planner subject is not in configured SUBJECTS")
+        steps = []
+        for step in data.get("steps", []):
+            steps.append(PlanStep(**step))
+        if not steps:
+            raise ValueError("Planner returned empty steps")
+        return cls(subject=data["subject"], steps=steps)
+
+    def to_json(self) -> str:
+        serializable = {
+            "subject": self.subject,
+            "steps": [step.__dict__ for step in self.steps],
+        }
+        return json.dumps(serializable, ensure_ascii=False, indent=2)
 
 def main_coordinator(state: State) -> Command[Literal["planner", "__end__"]]:
     """Coordinator node that communicate with customers."""
@@ -56,155 +89,129 @@ def main_coordinator(state: State) -> Command[Literal["planner", "__end__"]]:
         goto=goto,
     )
 def main_planner(state: State):
-    parser = JsonOutputParser()
-    def inner_router():
-        for i in range(3):
-            try:
-                system_message = get_prompt_template("knowledge_store_router")
-                messages = [
-                    SystemMessage(
-                        content = system_message
-                    ),
-                    HumanMessage(content=f'''当前查询：{state["ori_query"]}''')
-                ]
-                response = re.sub(r'<think>.*?</think>', '', get_llm_by_type(type = llm_type).invoke(messages).content, flags=re.DOTALL).strip()
-                # 5. 解析JSON输出
-                parser = JsonOutputParser()
-                result = parser.parse(response)
-                
-                # 6. 验证结果是否在可用知识库中
-                # valid_sources = {t["name"] for t in VECTORSTORES}
-                if result["subject"] not in SUBJECTS:
-                    logger.warning(f"第{i+1}次尝试：选择的知识库不存在: {result['subject']}")
-                    # return Command(
-                    #     goto = "__end__"
-                    # )
-                    continue
-                logger.info("router: %s", result["subject"])
-                return result["subject"]
-            except Exception as e:
-                logger.warning(f"模型返回非法JSON: {response} {e}")
-            except KeyError as e:
-                logger.warning(f"模型返回缺少必要字段: {response} {e}")
-        return "无可用知识库"
-    # 1. 定义 JSON 输出解析器
-    subject = inner_router()
-    system_message = get_prompt_template("planner",SUBJECT=subject)
+    system_message = get_prompt_template("planner", SUBJECT="，".join(SUBJECTS))
     messages = [
         SystemMessage(
-            content = system_message
+            content=system_message
         ),
         HumanMessage(content=f'''当前查询：{state["ori_query"]}''')
     ]
-    llm = get_llm_by_type(type = planner_llm_type)
-    
+    llm = get_llm_by_type(type=planner_llm_type)
+
     if state.get("search_before_planning"):
         searched_content = str(knowledge_searcher.invoke(state)["messages"][-1].content)
         messages = deepcopy(messages)
         messages[
             -1
         ].content += f"\n\n# 相关搜索结果\n\n{searched_content}"
-    full_response = ""
-    # 报错重传
+
+    parser = JsonOutputParser()
+    parsed_plan: QuizPlan
     for i in range(3):
         try:
-            stream = llm.stream(messages)
-            full_response = ""
-            for chunk in stream:
-                full_response += chunk.content
+            raw_plan = re.sub(
+                r'<think>.*?</think>', '', llm.invoke(messages).content, flags=re.DOTALL
+            ).strip()
+            if raw_plan.startswith("```json"):
+                raw_plan = raw_plan.removeprefix("```json")
+            if raw_plan.endswith("```"):
+                raw_plan = raw_plan.removesuffix("```")
+            parsed_dict = parser.parse(raw_plan)
+            parsed_plan = QuizPlan.from_dict(parsed_dict)
+            break
         except Exception as e:
             logger.warning(f"plan生成报错：{e}，重试第{i+1}次。")
             if i == 2:
-                try:
-                    full_response = llm.invoke(messages)
-                except Exception as e1:
-                    logger.warning(f"plan生成报错：{e1}")
-                    raise Exception("网络错误")
-    full_response = re.sub(r'<think>.*?</think>', '', full_response, flags=re.DOTALL).strip()
-    logger.info(f"Current state messages: {state['messages']}")
-    logger.info(f"Planner response: {full_response}")
+                raise
 
-    if full_response.startswith("```json"):
-        full_response = full_response.removeprefix("```json")
+    logger.info("Planner response: %s", parsed_plan.to_json())
 
-    if full_response.endswith("```"):
-        full_response = full_response.removesuffix("```")
+    generator_agents = {"rag_er", "rag_and_browser"}
+    need_to_generate = [
+        step.dict()
+        for step in parsed_plan.steps
+        if step.agent_name in generator_agents
+    ]
 
-    goto = "supervisor"
-    messages_tmp=[]
-    try:
-        repaired_response = json_repair.loads(full_response)
-        generator_agents = set(['rag_er','rag_and_browser'])
-        need_to_generate = [resi for resi in repaired_response['steps'] if resi['agent_name'] in generator_agents]
-        full_response = json.dumps(repaired_response, ensure_ascii=False, indent=2)
-        ## asyncio_generator 串行生成每道题目，目前还没实现并行
-        existed_qa, messages, failed_steps = asyncio_generator(state, need_to_generate)
-        messages_tmp.extend(messages)
+    full_response = parsed_plan.to_json()
+    existed_qa, new_messages, failed_steps = run_generator_concurrently(state, need_to_generate)
 
-    except json.JSONDecodeError:
-        logger.warning("Planner response is not a valid JSON")
-        goto = "__end__"
-    return_value_of_extend = [HumanMessage(content=full_response,name="planner")]
-    return_value_of_extend.extend(messages_tmp) # return_value_of_extend is None
+    planner_message = HumanMessage(content=full_response, name="planner")
+    all_messages = [planner_message]
+    all_messages.extend(new_messages)
+
     return Command(
         update={
-            "messages": return_value_of_extend,
+            "messages": all_messages,
             "full_plan": full_response,
-            "planned_generator_steps": need_to_generate if 'need_to_generate' in locals() else [],
-            "planned_question_count": len(need_to_generate) if 'need_to_generate' in locals() else 0,
-            "pending_generator_steps": failed_steps if 'failed_steps' in locals() else [],
-            "existed_qa": state.get("existed_qa", []) + (existed_qa if 'existed_qa' in locals() else []),
+            "planned_generator_steps": need_to_generate,
+            "planned_question_count": len(need_to_generate),
+            "pending_generator_steps": failed_steps,
+            "existed_qa": state.get("existed_qa", []) + existed_qa,
+            "rag": {**state.get("rag", {}), "subject": parsed_plan.subject},
         },
-        goto=goto,
+        goto="supervisor",
     )
 
-def asyncio_generator(state: State, need_to_generate: List):
-    '''
-    串行生成每道题目，目前还没实现并行
-    返回existed_qa和messages
-    '''
-    existed_qa = []
-    messages = []
-    inputs = []
-    failed_steps = []
-    ## 循环获取batch生成题目的输入messages
-    for needi in need_to_generate:
-        try:
-            updated_rag = {
-                **state['rag'],
-                "enable_browser": False if needi['agent_name'] == "rag_er" else True
-            }
-            ## True为获取输入用于batch生成
-            updated_rag['get_input'] = generator_model == "qwen"
-            if "note" in needi and len(needi['note'].strip())>0:
-                next_step_content = f"title: {needi['title']}\ndescription: {needi['description']}\nnote:{needi['note']}"
-            else:
-                next_step_content = f"title: {needi['title']}\ndescription: {needi['description']}"
+async def _generate_single(needi, state: State):
+    updated_rag = {
+        **state["rag"],
+        "enable_browser": False if needi["agent_name"] == "rag_er" else True,
+    }
+    updated_rag["get_input"] = generator_model == "qwen"
+    next_step_content = f"title: {needi['title']}\ndescription: {needi['description']}"
+    if needi.get("note") and needi["note"].strip():
+        next_step_content += f"\nnote:{needi['note']}"
 
-            logger.info("Browser agent starting task")
-            needi_state = {**state}
-            needi_state["next_work"] = next_step_content
-            needi_state["rag"] = updated_rag
-            rag_state = state['rag_graph'].invoke(needi_state)
-            if generator_model == "qwen":
-                inputs.append(rag_state['existed_qa'][-1])
-            else:
-                new_qa = rag_state['existed_qa'][-1]
-                existed_qa.append(new_qa)
-            new_q = f"题目内容已省略，概括内容为{next_step_content}"
-            messages.append(
-                HumanMessage(
-                    content=new_q,
-                    name=needi['agent_name'],
-                )
-            )
-        except Exception as e:
-            logger.error(f"asyncio_generator error: {e}")
-            failed_steps.append(needi)
+    needi_state = {**state}
+    needi_state["next_work"] = next_step_content
+    needi_state["rag"] = updated_rag
+
+    try:
+        if hasattr(state["rag_graph"], "ainvoke"):
+            rag_state = await state["rag_graph"].ainvoke(needi_state)
+        else:
+            rag_state = await asyncio.to_thread(state["rag_graph"].invoke, needi_state)
+        qa_payload = rag_state["existed_qa"][-1]
+        message = HumanMessage(
+            content=f"题目内容已省略，概括内容为{next_step_content}",
+            name=needi["agent_name"],
+        )
+        return qa_payload, message, None
+    except Exception as exc:  # pragma: no cover - logged and surfaced via failed_steps
+        logger.error("asyncio_generator error: %s", exc)
+        return None, None, needi
+
+
+def run_generator_concurrently(state: State, need_to_generate: List):
+    """Use asyncio gather to parallelize question generation."""
+
+    async def _runner():
+        tasks = [asyncio.create_task(_generate_single(needi, state)) for needi in need_to_generate]
+        return await asyncio.gather(*tasks)
+
+    results = asyncio.run(_runner()) if need_to_generate else []
+
+    existed_qa: List = []
+    messages: List = []
+    failed_steps: List = []
+    inputs: List = []
+
+    for qa_payload, message, failed in results:
+        if failed is not None:
+            failed_steps.append(failed)
+            continue
+        if generator_model == "qwen":
+            inputs.append(qa_payload)
+        else:
+            existed_qa.append(qa_payload)
+        messages.append(message)
+
     if generator_model == "qwen" and inputs:
-        ## batch生成题目
-        existed_qa = get_llm_by_type(type = "qwen",model = state['generate_model'],tokenizer =state['generate_tokenizer']).invoke(inputs)
-    # existed_qa.
+        existed_qa = get_llm_by_type(
+            type="qwen", model=state["generate_model"], tokenizer=state["generate_tokenizer"]
+        ).invoke(inputs)
+
     return existed_qa, messages, failed_steps
 
 
@@ -220,7 +227,7 @@ def fill_missing_questions(state: State):
     if not pending_steps:
         return [], [], []
 
-    new_questions, new_messages, failed_steps = asyncio_generator(state, pending_steps)
+    new_questions, new_messages, failed_steps = run_generator_concurrently(state, pending_steps)
     return new_questions, new_messages, failed_steps
 
     
@@ -229,7 +236,8 @@ def main_supervisor(state: State) -> Command[Literal[*TEAM_MEMBERS, "__end__"]]:
     """Supervisor node that decides which agent should act next."""
     logger.info("Supervisor evaluating next action")
     parser = JsonOutputParser()
-    messages = apply_prompt_template("supervisor",state)
+    trimmed_state = {**state, "messages": state.get("messages", [])[-10:]}
+    messages = apply_prompt_template("supervisor", trimmed_state)
     # preprocess messages to make supervisor execute better.
     messages = deepcopy(messages)
     reports = []
@@ -275,32 +283,46 @@ def main_supervisor(state: State) -> Command[Literal[*TEAM_MEMBERS, "__end__"]]:
         extra_questions, extra_messages, failed_steps = fill_missing_questions(state)
         if extra_questions or extra_messages:
             updates["existed_qa"] = state.get("existed_qa", []) + extra_questions
-            updates["messages"] = state["messages"] + extra_messages
+            updates["messages"] = state.get("messages", []) + extra_messages
             updates["pending_generator_steps"] = failed_steps
 
         planned_count = state.get("planned_question_count", 0)
         produced_count = len(updates.get("existed_qa", state.get("existed_qa", [])))
-        if planned_count and produced_count < planned_count:
-            logger.warning(
-                "Planner target %s questions, generated %s; finishing early.",
-                planned_count,
-                produced_count,
-            )
+        pending_steps = updates.get("pending_generator_steps") or state.get("pending_generator_steps", [])
 
-        goto = "__end__"
-        report_content = reports[-1] if reports else ""
-        if not report_content and state.get("messages"):
-            last_message = state["messages"][-1]
-            if isinstance(last_message, dict):
-                report_content = last_message.get("content", "")
-            else:
-                report_content = getattr(last_message, "content", "")
-        if report_content:
-            with open(state['quiz_url'], "w", encoding="utf-8") as f:
-                f.write(report_content)
+        if planned_count and produced_count < planned_count and pending_steps:
+            logger.info(
+                "Not enough questions generated (have %s / target %s); routing to generator.",
+                produced_count,
+                planned_count,
+            )
+            next_pending = pending_steps[0]
+            goto = next_pending["agent_name"]
+            updates.update(
+                {
+                    "next": goto,
+                    "next_work": next_pending.get("description", ""),
+                    "rag": {
+                        **state["rag"],
+                        "enable_browser": next_pending["agent_name"] == "rag_and_browser",
+                    },
+                }
+            )
         else:
-            logger.warning("No reporter output available; skipping report write for %s", state.get("quiz_url"))
-        logger.info("Workflow completed")
+            goto = "__end__"
+            report_content = reports[-1] if reports else ""
+            if not report_content and state.get("messages"):
+                last_message = state["messages"][-1]
+                if isinstance(last_message, dict):
+                    report_content = last_message.get("content", "")
+                else:
+                    report_content = getattr(last_message, "content", "")
+            if report_content:
+                with open(state['quiz_url'], "w", encoding="utf-8") as f:
+                    f.write(report_content)
+            else:
+                logger.warning("No reporter output available; skipping report write for %s", state.get("quiz_url"))
+            logger.info("Workflow completed")
     else:
         logger.info(f"Supervisor delegating to: {goto}")
     if goto == "rag_er":
